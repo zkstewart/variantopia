@@ -1,5 +1,47 @@
 import os
 
+# Plot mode
+def validate_p(args):
+    '''
+    Validation for arguments common to all "plot" mode commands.
+    '''
+    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
+    
+    # Validate VCF file
+    args.vcfFile = os.path.abspath(args.vcfFile)
+    if not os.path.isfile(args.vcfFile):
+        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
+    
+    # Validate optional genome and/or GFF3 files
+    if args.feature == "genes" and args.gff3File == None:
+        raise ValueError("'-f genes' necessitates that --gff3 be provided.")
+    if args.gff3File != None:
+        args.gff3File = os.path.abspath(args.gff3File)
+        if not os.path.isfile(args.gff3File):
+            raise FileNotFoundError(f"GFF3 file (--gff3 {args.gff3File}) does not exist!")
+    
+    if args.feature == "chromosomes" and args.genomeFile == None:
+        raise ValueError("'-f chromosomes' necessitates that --genome be provided.")
+    if args.genomeFile != None:
+        args.genomeFile = os.path.abspath(args.genomeFile)
+        if not os.path.isfile(args.genomeFile):
+            raise FileNotFoundError(f"Genome file (--genome {args.genomeFile}) does not exist!")
+    
+    # Validate numeric arguments
+    if args.windowSize < 1:
+        raise ValueError("-w must be a positive integer greater than 0.")
+    if args.width < 1:
+        raise ValueError("--width must be a positive integer greater than 0.")
+    if args.height < 1:
+        raise ValueError("--height must be a positive integer greater than 0.")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
 # Reformat mode
 def validate_r(args):
     '''

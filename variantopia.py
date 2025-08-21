@@ -8,7 +8,9 @@
 import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from modules.validation import validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
+from modules.validation import validate_p, \
+    validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
+from modules.plot import Plot
 from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
 from _version import __version__
 
@@ -60,6 +62,57 @@ def main():
                                     add_help=False,
                                     help="Plot VCF data")
     pparser.set_defaults(func=pmain)
+    
+    pparser.add_argument("-i", dest="vcfFile",
+                         required=True,
+                         help="Location of VCF file to plot")
+    pparser.add_argument("-o", dest="outputFileName",
+                         required=True,
+                         help="""Location to write plot output; file extension
+                         must be one of .png, .pdf, or .svg""")
+    pparser.add_argument("-s", dest="statistic",
+                         required=True,
+                         choices=["snpnumber", "mac", "maf", "callrate", "het"],
+                         help="Specify which statistic to plot")
+    pparser.add_argument("-f", dest="feature",
+                         required=True,
+                         choices=["genes", "chromosomes"],
+                         help="""Specify which type of feature to plot""")
+    pparser.add_argument("-w", dest="windowSize",
+                         required=True,
+                         type=int,
+                         help="""Specify the window size for statistics summarisation;
+                         a size of 1 will plot the statistic for each nucleotide position
+                         individually, while larger sizes will summarise the statistic
+                         over that many basepairs in length.""")
+    pparser.add_argument("--genome", dest="genomeFile",
+                         required=False,
+                         help="Specify genome file if '-f chromosomes' is used",
+                         default=None)
+    pparser.add_argument("--gff3", dest="gff3File",
+                         required=False,
+                         help="""Specify GFF3 file if '-f genes' is used, or if
+                         you want gene locations to be annotated on a
+                         '-f chromosomes' plot""",
+                         default=None)
+    pparser.add_argument("--colour", dest="colourMap",
+                         required=False,
+                         choices=["viridis", "Greys", "GnBu", "RdBu"],
+                         help="""Optionally, specify the colour scheme to use for the plot;
+                         default is 'viridis'; refer to
+                         https://matplotlib.org/stable/users/explain/colors/colormaps.html
+                         for examples""",
+                         default="viridis")
+    pparser.add_argument("--width", dest="width",
+                         type=int,
+                         required=False,
+                         help="""Optionally, specify the output plot width (default=10)""",
+                         default=10)
+    pparser.add_argument("--height", dest="height",
+                         type=int,
+                         required=False,
+                         help="""Optionally, specify the output plot height (default=6)""",
+                         default=6)
     
     # Reformat mode
     rparser = subparsers.add_parser("reformat",
@@ -181,25 +234,6 @@ def main():
                                     add_help=False,
                                     help="Generate statistics for a VCF file")
     sparser.set_defaults(func=rmain)
-    
-    # Filter-subparser arguments
-    ## Required arguments
-    fparser.add_argument("-m", dest="measurementType",
-                         required=True,
-                         choices=["ed-call", "ed-depth", "splsda"],
-                         help="""Specify whether you are analysing 'ed-call' (Euclidean distance
-                         of 'call' variants), 'ed-depth' (Euclidean distance of 'depth'
-                         CNVs), or 'splsda' (Sparse Partial Least Squares Discriminant Analysis)
-                         measurements""")
-    
-    # Plot-subparser arguments
-    ## Required arguments
-    pparser.add_argument("-i", dest="inputType",
-                         required=True,
-                         nargs="+",
-                         choices=["call", "depth"],
-                         help="""Specify one or both of 'call' and 'depth' to indicate which
-                         types of results to process.""")
     
     args = subParentParser.parse_args()
     
