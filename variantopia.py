@@ -8,8 +8,8 @@
 import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from modules.validation import validate_r, validate_r_cf
-from modules.reformat import vcf_to_cf
+from modules.validation import validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
+from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
 from _version import __version__
 
 def main():
@@ -101,6 +101,21 @@ def main():
     genoparser.add_argument("-o", dest="outputFileName",
                             required=True,
                             help="Location to write reformatted file")
+    genoparser.add_argument("--uncalled", dest="uncalledCharacter",
+                            required=False,
+                            help="""Optionally, set the character to use for uncalled
+                            genotypes. Default is -1.""",
+                            default="-1")
+    genoparser.add_argument("--keepM", dest="keepMultiallelic",
+                            required=False,
+                            action="store_true",
+                            help="Optionally, keep multiallelic sites in the output file",
+                            default=False)
+    genoparser.add_argument("--keepI", dest="keepIndels",
+                            required=False,
+                            action="store_true",
+                            help="Optionally, keep indels in the output file",
+                            default=False)
     
     posparser = subReformatParsers.add_parser("pos",
                                               parents=[p],
@@ -112,6 +127,21 @@ def main():
     posparser.add_argument("-o", dest="outputFileName",
                            required=True,
                            help="Location to write reformatted file")
+    posparser.add_argument("--header", dest="header",
+                           required=False,
+                           action="store_true",
+                           help="Optionally, add a header to the output file",
+                           default=False)
+    posparser.add_argument("--keepM", dest="keepMultiallelic",
+                           required=False,
+                           action="store_true",
+                           help="Optionally, keep multiallelic sites in the output file",
+                           default=False)
+    posparser.add_argument("--keepI", dest="keepIndels",
+                           required=False,
+                           action="store_true",
+                           help="Optionally, keep indels in the output file",
+                           default=False)
     
     tableparser = subReformatParsers.add_parser("table",
                                                 parents=[p],
@@ -123,6 +153,11 @@ def main():
     tableparser.add_argument("-o", dest="outputFileName",
                               required=True,
                               help="Location to write reformatted file")
+    tableparser.add_argument("--sampleOrder", dest="sampleOrderFile",
+                             required=False,
+                             help="""Optionally, specify a text file listing the order of samples
+                             (as columns) in the output table; default is to use the VCF header order""",
+                             default=None)
     
     vcfmsaparser = subReformatParsers.add_parser("msa",
                                                  parents=[p],
@@ -134,6 +169,11 @@ def main():
     vcfmsaparser.add_argument("-o", dest="outputFileName",
                               required=True,
                               help="Location to write reformatted file")
+    vcfmsaparser.add_argument("--ploidy", dest="ploidy",
+                              required=False,
+                              type=int,
+                              help="Optionally, indicate the ploidy of the samples (default: 2)",
+                              default=2)
     
     # Stats mode
     sparser = subparsers.add_parser("stats",
@@ -208,15 +248,19 @@ def rmain(args):
     elif args.reformatMode == "geno":
         print("## VCF -> Geno ##")
         validate_r_geno(args)
+        vcf_to_geno(args)
     elif args.reformatMode == "pos":
         print("## VCF -> Pos ##")
         validate_r_pos(args)
+        vcf_to_pos(args)
     elif args.reformatMode == "table":
         print("## VCF -> Table ##")
         validate_r_table(args)
+        vcf_to_table(args)
     elif args.reformatMode == "msa":
         print("## VCF -> MSA ##")
         validate_r_msa(args)
+        vcf_to_msa(args)
     
     print("Reformatting complete!")
 
