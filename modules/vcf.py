@@ -3,13 +3,14 @@
 # Classes and functions for parsing VCF files into suitable
 # data structures for variantopia.
 
-import os
+import os, shutil, subprocess
 from cyvcf2 import VCF
 
 class VCFTopia:
     def __init__(self, vcfFile):
         self.vcfFile = vcfFile
         self.vcf = VCF(vcfFile)
+        self.isVCFTopia = True
     
     @staticmethod
     def format_refAlt(variant):
@@ -122,6 +123,123 @@ class VCFTopia:
             return { chrom:seqLength for chrom, seqLength in zip(self.vcf.seqnames, self.vcf.seqlens) }
         return None
     
+    @property
+    def is_bgzipped(self):
+        '''
+        Check if the VCF file is bgzipped.
+        
+        Returns:
+            True if the VCF file is bgzipped, False otherwise.
+        '''
+        return self.vcfFile.endswith(".vcf.gz") or self.vcfFile.endswith(".vcf.bgz")
+    
+    @property
+    def is_indexed(self):
+        '''
+        Check if the VCF file is indexed.
+        
+        Returns:
+            True if the VCF file is indexed, False otherwise.
+        '''
+        indexFile = self.vcfFile + ".tbi" if self.is_bgzipped else self.vcfFile + ".csi"
+        return os.path.exists(indexFile)
+    
+    def index(self, tabixExe=None, bcftoolsExe=None):
+        '''
+        Create an index for the VCF to allow for fast querying. If one of either the tabix
+        or bcftools executables is provided, it will be used to create the index. If neither
+        is provided, VCFTopia will attempt to find tabix in the system PATH and use it, with
+        bcftools as a fallback. If this fails, an error will be raised.
+        
+        Parameters:
+            tabixExe -- path to the tabix executable; if None, uses the default in PATH
+            bcftoolsExe -- path to the bcftools executable; if None, uses the default in PATH
+        '''
+        if not self.is_bgzipped:
+            raise ValueError(f"Cannot index VCF file '{self.vcfFile}' since it is not bgzipped. " +
+                             "Please bgzip the file before indexing it.")
+        
+        if tabixExe != None:
+            self.tabix(tabixExe)
+        elif bcftoolsExe != None:
+            self.bcftools_index(bcftoolsExe)
+        else:
+            # Try to find tabix in the system PATH
+            tabixPath = shutil.which("tabix")
+            if tabixPath != None:
+                self.tabix(tabixPath)
+            else:
+                # If tabix is not found, try to find bcftools
+                bcftoolsPath = shutil.which("bcftools")
+                if bcftoolsPath != None:
+                    self.bcftools_index(bcftoolsPath)
+                else:
+                    raise FileNotFoundError(f"Neither tabix nor bcftools found in PATH thus cannot index '{self.vcfFile}'; " +
+                                            "please index this file manually before using it in variantopia.")
+    
+    def tabix(self, tabixExe):
+        '''
+        Create an index for the VCF file using the tabix executable.
+        
+        Parameters:
+            tabixExe -- path to the tabix executable
+        '''
+        if not self.is_bgzipped:
+            raise ValueError(f"Cannot index VCF file '{self.vcfFile}' since it is not bgzipped. " +
+                             "Please bgzip the file before using it with variantopia.")
+        if not os.path.exists(tabixExe):
+            raise FileNotFoundError(f"tabix executable not found at '{tabixExe}'")
+        
+        # Run tabix to index the VCF file
+        cmd = [tabixExe, "-f", "-p", "vcf", self.vcfFile]
+        run_tabix = subprocess.Popen(" ".join(cmd), shell = True,
+                                    stdout = subprocess.PIPE,
+                                    stderr = subprocess.PIPE)
+        tabixout, tabixerr = run_tabix.communicate()
+        
+        # Check that tabix ran successfully
+        if tabixout.decode("utf-8") != "":
+            raise Exception(("tabix stdout is not empty as expected, indicating a probable error. " +
+                            f'Please check the stdout ({tabixout.decode("utf-8")}) and stderr ' + 
+                            f'({tabixerr.decode("utf-8")}) to make sense of this.'))
+        elif tabixerr.decode("utf-8") != "":
+            raise Exception(("tabix encountered an error; have a look " +
+                            f'at the stdout ({tabixout.decode("utf-8")}) and stderr ' + 
+                            f'({tabixerr.decode("utf-8")}) to make sense of this.'))
+        print(f"# Indexed '{self.vcfFile}' with tabix")
+    
+    def bcftools_index(self, bcftoolsExe):
+        '''
+        Create an index for the VCF file using the bcftools executable.
+        
+        Parameters:
+            bcftoolsExe -- path to the tabix executable
+        '''
+        #BAD_WORDS = ["failed", "error", "warning", "abort", "exception", "fatal", "fail", "unrecogni"]
+        if not self.is_bgzipped:
+            raise ValueError(f"Cannot index VCF file '{self.vcfFile}' since it is not bgzipped. " +
+                             "Please bgzip the file before using it with variantopia.")
+        if not os.path.exists(bcftoolsExe):
+            raise FileNotFoundError(f"bcftools executable not found at '{bcftoolsExe}'")
+        
+        # Run tabix to index the VCF file
+        cmd = [bcftoolsExe, "index", self.vcfFile]
+        run_index = subprocess.Popen(" ".join(cmd), shell = True,
+                                    stdout = subprocess.PIPE,
+                                    stderr = subprocess.PIPE)
+        indexout, indexerr = run_index.communicate()
+        
+        # Check that bcftools index ran successfully
+        if indexout.decode("utf-8") != "":
+            raise Exception(("bcftools index stdout is not empty as expected, indicating a probable error. " +
+                            f'Please check the stdout ({indexout.decode("utf-8")}) and stderr ' + 
+                            f'({indexerr.decode("utf-8")}) to make sense of this.'))
+        elif indexerr.decode("utf-8") != "":
+            raise Exception(("bcftools index encountered an error; have a look " +
+                            f'at the stdout ({indexout.decode("utf-8")}) and stderr ' + 
+                            f'({indexerr.decode("utf-8")}) to make sense of this.'))
+        print(f"# Indexed '{self.vcfFile}' with bcftools index")
+    
     def query(self, chrom, startEnd=None):
         '''
         Query the VCF file for variants in a specific region.
@@ -132,7 +250,15 @@ class VCFTopia:
                         If None, queries the entire chromosome.
         '''
         queryRange = f"{chrom}:{startEnd[0]}-{startEnd[1]}" if startEnd else chrom
-        yield from self.vcf(queryRange)
+        try:
+            yield from self.vcf(queryRange)
+        except AssertionError as e:
+            if "error loading tabix index" in str(e):
+                print("Attempting to index the VCF file due to an indexing error...")
+                self.index()  # Attempt to index the VCF file if the error is related to indexing
+                yield from self.vcf(queryRange)
+            else:
+                raise e # re-raise the exception if it's not related to indexing
     
     def as_genotype_dict(self, multialleles=True, indels=True, mnps=True):
         '''
@@ -220,6 +346,13 @@ class VCFTopia:
         Iterate over all variants in the VCF file.
         """
         yield from self.vcf
+    
+    def __repr__(self):
+        return "<VCFTopia object;file='{0}';num_samples={1};num_contigs={2}>".format(
+            self.vcfFile,
+            len(vcf.vcf.samples),
+            len(vcf.chroms)
+        )
 
 if __name__ == "__main__":
     pass
