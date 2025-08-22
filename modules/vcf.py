@@ -5,12 +5,131 @@
 
 import os, shutil, subprocess
 from cyvcf2 import VCF
+from collections import Counter
 
 class VCFTopia:
     def __init__(self, vcfFile):
         self.vcfFile = vcfFile
         self.vcf = VCF(vcfFile)
         self.isVCFTopia = True
+    
+    @staticmethod
+    def count_alleles(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns a sorted list of tuples
+        containing each allele (as an integer code) and its count.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            alleleCounts -- a list of tuples where each tuple contains an allele
+                            and its count, sorted by count in descending order.
+        '''
+        alleles = [ allele for genotype in variant.genotypes for allele in genotype[:-1]]
+        counts = Counter(alleles)
+        alleleCounts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        
+        return alleleCounts
+    
+    @staticmethod
+    def count_homhet(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns a Counter object with
+        two keys: "hom" and "het", where "hom" contains the count of samples with
+        homozygous genotype, and "het" contains the count of samples with
+        heterozygous genotype.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            homHet -- a collections.Counter object with structure like:
+                      {
+                          "hom": count_of_homozygous_samples,
+                          "het": count_of_heterozygous_samples
+                      }
+        '''
+        genotypeCategories = [
+            "hom" if len(set(genotype[:-1])) == 1 else "het"
+            for genotype in variant.genotypes if not -1 in genotype[:-1]
+        ]
+        homHet = Counter(genotypeCategories)
+        homHet.setdefault("hom", 0)
+        homHet.setdefault("het", 0)
+        
+        return homHet
+    
+    @staticmethod
+    def calculate_mac(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns the minor allele count (MAC),
+        which is the count of the second most common allele.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            mac -- the minor allele count (MAC) for the variant.
+        '''
+        alleleCounts = VCFTopia.count_alleles(variant)
+        #majorAlleles = [ allele for allele, count in orderedAlleles if count == orderedAlleles[0][1] ]
+        #return sum(count for allele, count in alleleCounts if not allele in majorAlleles)
+        
+        for allele, count in alleleCounts[1:]:
+            if allele != -1:
+                return count
+        return 0
+    
+    @staticmethod
+    def calculate_maf(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns the minor allele frequency (MAF),
+        which is the frequency of the second most common allele.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            maf -- the minor allele frequency (MAF) for the variant.
+        '''
+        alleleCounts = VCFTopia.count_alleles(variant)
+        #majorAlleles = [ allele for allele, count in orderedAlleles if count == orderedAlleles[0][1] ]
+        #return sum(count for allele, count in alleleCounts if not allele in majorAlleles) / sum(count for allele, count in alleleCounts)
+        
+        for allele, count in alleleCounts[1:]:
+            if allele != -1:
+                return count / sum(count for allele, count in alleleCounts if allele != -1)
+        return 0.0
+    
+    @staticmethod
+    def calculate_callrate(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns the callrate, which is the
+        proportion of samples that have a non-missing genotype for the variant.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            callrate -- the callrate for the variant, as a float between 0 and 1.
+        '''
+        alleleCounts = VCFTopia.count_alleles(variant)
+        
+        for allele, count in alleleCounts[1:]:
+            if allele == -1:
+                return 1 - (count / sum(count for allele, count in alleleCounts))
+        return 1.0
+    
+    @staticmethod
+    def calculate_heterozygosity(variant):
+        '''
+        Takes a cyvcf2.Variant object and returns the heterozygosity, which is the
+        proportion of samples that have a heterozygous genotype call for the variant.
+        
+        Parameters:
+            variant -- a cyvcf2.Variant object
+        Returns:
+            heterozygosity -- the sample heterozygosity for the variant, as a float
+                              between 0 and 1.
+        '''
+        homHet = VCFTopia.count_homhet(variant)
+        return homHet["het"] / (homHet["hom"] + homHet["het"]) if (homHet["hom"] + homHet["het"]) > 0 else 0.0
     
     @staticmethod
     def format_refAlt(variant):

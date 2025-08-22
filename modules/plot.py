@@ -1,4 +1,5 @@
 import os, gzip
+import numpy as np
 from Bio import SeqIO
 
 #from .vcf import VCFTopia
@@ -6,6 +7,35 @@ from Bio import SeqIO
 
 class Plot:
     Plot.STANDARD_DIMENSION = 5
+    
+    @staticmethod
+    def bin_values(values, windowSize, summariseMethod=np.sum):
+        '''
+        Parameters:
+            values -- a list of lists containing three values: [position, contigID, statistical value]
+            windowSize -- an integer value indicating the size of the windows
+            summariseMethod -- a function to summarise the values within each bin; defaults to np.sum
+                               but can be set to other functions like np.mean, np.median, etc.
+        Returns:
+            windows -- a numpy array with length equal to the number of windows
+                       that the values array divides into, with each window's value
+                       being the result of applying the summariseMethod to the values
+                       within that window.
+        '''
+        # Bin values into their respective windows
+        windows = [
+            [] for _ in range(math.ceil(len(values) / windowSize))
+        ]
+        for i, stat in enumerate(values):
+            windowIndex = (i) // windowSize
+            windows[windowIndex].append(stat)
+        
+        # Apply the summariseMethod to each window
+        windows = np.array([
+            summariseMethod(np.array(window)) if window else 0
+            for window in windows
+        ])
+        return windows
     
     def __init__(self, statistic, feature, windowSize, vcf, gff3=None, genomeFile=None,
                  width=None, height=None):
@@ -127,8 +157,8 @@ class Plot:
         if not hasattr(value, "isGFF3Topia") or not value.isGFF3Topia:
             raise TypeError("gff3 must be a GFF3Topia object.")
         
-        if value.nclsObj == {}:
-            value.create_ncls_index()
+        if value.ncls == None:
+            value.create_ncls_index(typeToIndex=["gene"])
         self._gff3 = value
     
     @property
@@ -145,34 +175,6 @@ class Plot:
         else:
             raise TypeError(f"colourMap must be a string from {ACCEPTED_COLOUR_MAPS}, not '{value}'")
     
-    def scatter(self, contigID, start, end):
-        '''
-        Returns data suited for scatter plotting of WindowedNCLS values.
-        
-        Parameters:
-            contigID -- a string indicating the contig ID
-            start -- an integer indicating the start position of the region
-            end -- an integer indicating the end position of the region
-        Returns:
-            x -- a numpy array of the x values (positions)
-            y -- a numpy array of the y values (statistical values)
-        '''
-        regionValues = windowedNCLS.find_overlap(contigID, start, end)
-        x, y = [], []
-        for pos, _, ed in regionValues:
-            if clipped and pos < start: # can occur if windowSize > 1; this is treated as our first value
-                pos = start
-            if clipped and pos > end: # this should not happen
-                continue
-            x.append(pos)
-            y.append(ed)
-        x = np.array(x)
-        y = np.array(y)
-        
-        return x, y
-    
-    
-    
     def plot(self):
         raise NotImplementedError("plot() must be implemented in subclasses")
 
@@ -181,69 +183,259 @@ class GenesPlot(Plot):
                  width=None, height=None):
         super().__init__(statistic, feature, windowSize, vcf, gff3, genomeFile, width, height)
     
-    def variants(self, geneID):
+    def gene(self, geneID, structure=["CDS"]):
         '''
-        Returns variants overlapping the specified gene.
+        Obtains the relevant structural coordinates of the specified gene.
         
         Parameters:
             geneID -- a string indicating the gene ID
+            structure -- a list of strings indicating the gene structure components
+                         to consider; defaults to ["CDS"] which includes only coding sequences
+                         but can be set to include other components like "intron", and 
+                         "CDS" can be replaced with "exon" to include all exons.
         Returns:
-            x -- a numpy array of the x values (positions)
-            y -- a numpy array of the y values (statistical values)
+            contig -- a string indicating the contig on which the gene is located
+            coordinates -- a list of tuples indicating the start and end positions
+                           of the relevant structural components within the gene.
         '''
-        geneFeature = self.gff3.index[geneID]
-        geneVariants = self.vcf.query(geneFeature["id"], (geneFeature["start"], geneFeature["end"]))
+        ACCEPTED_STRUCTUREs = ["CDS", "intron", "exon"]
+        for struct in structure:
+            if struct not in ACCEPTED_STRUCTUREs:
+                raise ValueError(f"structure must be a list of strings from {ACCEPTED_STRUCTUREs}, not '{structure}'")
+        if "CDS" in structure and "exon" in structure:
+            raise ValueError("Cannot include both 'CDS' and 'exon' in structure.")
         
-        x, y = [], []
-        for pos, _, ed in regionValues:
-            if clipped and pos < start: # can occur if windowSize > 1; this is treated as our first value
-                pos = start
-            if clipped and pos > end: # this should not happen
-                continue
-            x.append(pos)
-            y.append(ed)
-        x = np.array(x)
-        y = np.array(y)
+        geneFeature = self.gff3.features[geneID]
+        mrnaFeature = GFF3Topia.longest_isoform(geneFeature)
+        if "CDS" in structure:
+            if not hasattr(mrnaFeature, "CDS"):
+                raise ValueError(f"Gene '{geneID}' longest isoform '{mrnaFeature.ID}' does not have CDS features.")
+        elif "exon" in structure or "intron" in structure: # exons define introns
+            if not hasattr(mrnaFeature, "exon"):
+                raise ValueError(f"Gene '{geneID}' longest isoform '{mrnaFeature.ID}' does not have exon features.")
         
-        return x, y
-    # "snpnumber", "mac", "maf", "callrate", "het"
+        # Get the coordinates within which to locate variants
+        if len(structure) == 2: # "intron" and ("CDS" or "exon")
+            start, end = mrnaFeature.start_and_end("CDS" if "CDS" in structure else "exon")
+            coordinates = [(start, end)]
+        else:
+            if "intron" in structure: # len(structure) == 1 if we entered this else condition
+                exonCoordinates = [ (exonFeature.start, exonFeature.end) for exonFeature in mrnaFeature.exon ]
+                exonCoordinates.sort(key=lambda x: x[0]) # sort by start position
+                
+                coordinates = [ (exonCoordinates[i-1][1]+1, exonCoordinates[i][0]-1) for i in range(1, len(exonCoordinates)-1) ]
+            else:
+                coordinates = [ (subFeature.start, subFeature.end) for subFeature in getattr(mrnaFeature, structure[0]) ]
+        
+        return mrnaFeature.contig, coordinates
+    
+    def variants(self, contig, coordinates):
+        '''
+        Returns variants overlapping the specified coordinates.
+        
+        Parameters:
+            contig -- a string indicating the contig on which the gene is located
+            coordinates -- a list of tuples indicating the start and end positions
+                           of the relevant structural components within the gene;
+                           as obtained from the gene() method.
+        Returns:
+            geneVariants -- a list of variants overlapping the specified coordinates.
+        '''
+        geneVariants = []
+        for start, end in coordinates:
+            geneVariants.extend(self.vcf.query(contig, (start, end)))
+        return geneVariants
     
     def snpnumber(self, geneID):
         '''
-        Returns the number of SNPs overlapping the specified gene. As an implicitly
-        windowSize=1 statistic (prior to any binning of this function's output),
-        this function returns a np.array with length equal to the gene length,
-        where 0 == no SNP and 1 == SNP presence at that position.
+        Returns the number of SNPs overlapping the specified gene.
+        This function returns an np.array with length equal to the number of
+        windows needed to cover the gene length, where each value indicates the
+        number of SNPs overlapping that window.
         
         Parameters:
             geneID -- a string indicating the gene ID
         Returns:
-            x -- a numpy array of the x values (positions)
-            y -- a numpy array of the y values (number of SNPs)
+            snps -- a numpy array with length equal to the number of windows
+                    that the gene length divides into, with each value indicating
+                    the number of SNPs overlapping that window. Serves
+                    as the 'y' values for plotting.
         '''
-        geneFeature = self.gff3.index[geneID]
-        snpCount = self.vcf.snp_count(geneFeature["id"], (geneFeature["start"], geneFeature["end"]))
+        # Get gene coordinates and the variants overlapping them
+        contig, coordinates = self.gene(geneID)
         
-        x = np.array([geneFeature["start"], geneFeature["end"]])
-        y = np.array([snpCount, snpCount])
+        # Lay out the SNPs in a numpy array
+        snps = []
+        for coordinate in coordinates:
+            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=int)
+            variants = self.variants(contig, [coordinate])
+            for variant in variants:
+                position = variant.POS - coordinate[0]
+                coordsArray[position] = 1
+            snps.append(coordsArray)
+        snps = np.concatenate(snps)
         
-        return x, y
+        # Bin the SNPs to the specified window size
+        if self.windowSize > 1:
+            snps = Plot.bin_values(snps, self.windowSize, summariseMethod=np.sum)
+        
+        return snps
+    
+    def mac(self, geneID):
+        '''
+        Returns the minor allele count (MAC) of SNPs overlapping the specified gene.
+        This function returns an np.array with length equal to the number of windows
+        needed to cover the gene length, where each value indicates the averaged MAC
+        of SNPs overlapping that window.
+        
+        Parameters:
+            geneID -- a string indicating the gene ID
+        Returns:
+            macs -- a numpy array with length equal to the number of windows
+                    that the gene length divides into, with each value indicating
+                    the averaged MAC of SNPs overlapping that window. Serves
+                    as the 'y' values for plotting.
+        '''
+        # Get gene coordinates and the variants overlapping them
+        contig, coordinates = self.gene(geneID)
+        
+        # Lay out the MACs in a numpy array
+        macs = []
+        for coordinate in coordinates:
+            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=int)
+            variants = self.variants(contig, [coordinate])
+            for variant in variants:
+                position = variant.POS - coordinate[0]
+                coordsArray[position] = VCFTopia.calculate_mac(variant)
+            macs.append(coordsArray)
+        macs = np.concatenate(macs)
+        
+        # Bin the MACs to the specified window size
+        if self.windowSize > 1:
+            macs = Plot.bin_values(macs, self.windowSize, summariseMethod=np.mean)
+        
+        return macs
+    
+    def maf(self):
+        '''
+        Returns the minor allele frequency (MAF) of SNPs overlapping the specified gene.
+        This function returns an np.array with length equal to the number of windows
+        needed to cover the gene length, where each value indicates the averaged MAF
+        of SNPs overlapping that window.
+        
+        Parameters:
+            geneID -- a string indicating the gene ID
+        Returns:
+            mafs -- a numpy array with length equal to the number of windows
+                    that the gene length divides into, with each value indicating
+                    the averaged MAF of SNPs overlapping that window. Serves
+                    as the 'y' values for plotting.
+        '''
+        # Get gene coordinates and the variants overlapping them
+        contig, coordinates = self.gene(geneID)
+        
+        # Lay out the MAFs in a numpy array
+        mafs = []
+        for coordinate in coordinates:
+            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
+            variants = self.variants(contig, [coordinate])
+            for variant in variants:
+                position = variant.POS - coordinate[0]
+                coordsArray[position] = VCFTopia.calculate_maf(variant)
+            mafs.append(coordsArray)
+        mafs = np.concatenate(mafs)
+        
+        # Bin the MAFs to the specified window size
+        if self.windowSize > 1:
+            mafs = Plot.bin_values(mafs, self.windowSize, summariseMethod=np.mean)
+        
+        return mafs
+    
+    def callrate(self):
+        '''
+        Returns the callrate of SNPs overlapping the specified gene.
+        This function returns an np.array with length equal to the number of windows
+        needed to cover the gene length, where each value indicates the averaged callrate
+        of SNPs overlapping that window.
+        
+        Parameters:
+            geneID -- a string indicating the gene ID
+        Returns:
+            callrates -- a numpy array with length equal to the number of windows
+                         that the gene length divides into, with each value indicating
+                         the averaged callrate of SNPs overlapping that window. Serves
+                         as the 'y' values for plotting.
+        '''
+        # Get gene coordinates and the variants overlapping them
+        contig, coordinates = self.gene(geneID)
+        
+        # Lay out the callrates in a numpy array
+        callrates = []
+        for coordinate in coordinates:
+            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
+            variants = self.variants(contig, [coordinate])
+            for variant in variants:
+                position = variant.POS - coordinate[0]
+                coordsArray[position] = VCFTopia.calculate_callrate(variant)
+            callrates.append(coordsArray)
+        callrates = np.concatenate(callrates)
+        
+        # Bin the MAFs to the specified window size
+        if self.windowSize > 1:
+            callrates = Plot.bin_values(callrates, self.windowSize, summariseMethod=np.mean)
+        
+        return callrates
+    
+    def het(self):
+        '''
+        Returns the proportion of heterozygous sample genotypes overlapping the specified gene.
+        This function returns an np.array with length equal to the number of windows
+        needed to cover the gene length, where each value indicates the averaged heterozygosity
+        of SNPs overlapping that window.
+        
+        Parameters:
+            geneID -- a string indicating the gene ID
+        Returns:
+            hets -- a numpy array with length equal to the number of windows
+                    that the gene length divides into, with each value indicating
+                    the averaged heterozygosity of SNPs overlapping that window. Serves
+                    as the 'y' values for plotting.
+        '''
+        # Get gene coordinates and the variants overlapping them
+        contig, coordinates = self.gene(geneID)
+        
+        # Lay out the hets in a numpy array
+        hets = []
+        for coordinate in coordinates:
+            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
+            variants = self.variants(contig, [coordinate])
+            for variant in variants:
+                position = variant.POS - coordinate[0]
+                coordsArray[position] = VCFTopia.calculate_heterozygosity(variant)
+            hets.append(coordsArray)
+        hets = np.concatenate(hets)
+        
+        # Bin the MAFs to the specified window size
+        if self.windowSize > 1:
+            hets = Plot.bin_values(hets, self.windowSize, summariseMethod=np.mean)
+        
+        return hets
     
     def plot(self):
         '''
         This method should be implemented to create a plot of the specified statistic
         for the genes in the GFF3 file.
         '''
-        raise NotImplementedError("plot() must be implemented in GenesPlot subclass")
+        raise NotImplementedError("plot() not yet implemented in GenesPlot subclass")
 
 class ChromosomesPlot(Plot):
     def __init__(self, statistic, feature, windowSize, vcf, gff3=None, genomeFile=None,
                  width=None, height=None):
         super().__init__(statistic, feature, windowSize, vcf, gff3, genomeFile, width, height)
-
+    
     def plot(self):
         '''
         This method should be implemented to create a plot of the specified statistic
         for the chromosomes in the genome file.
         '''
-        raise NotImplementedError("plot() must be implemented in ChromosomesPlot subclass")
+        raise NotImplementedError("plot() not yet implemented in ChromosomesPlot subclass")
