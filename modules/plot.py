@@ -1,12 +1,34 @@
-import os, gzip
+import os, math
 import numpy as np
+import matplotlib.colors
+import matplotlib.pyplot as plt
+
 from Bio import SeqIO
 
-#from .vcf import VCFTopia
-#from .gff3 import GFF3Topia
+from .vcf import VCFTopia
+from .gff3 import GFF3Topia
 
 class Plot:
-    Plot.STANDARD_DIMENSION = 5
+    STANDARD_DIMENSION = 5
+    
+    INTERVALS = {
+        1: [1, "bp"], # 1 bp
+        10: [1, "bp"], # 10 bp
+        100: [1, "bp"], # 100 bp
+        1000: [1000, "Kb"], # 1 Kb
+        10000: [1000, "Kb"], # 10 Kb
+        100000: [1000, "Kb"], # 100 Kb
+        1000000: [1000000, "Mb"], # 1 Mb
+        10000000: [1000000, "Mb"], # 10 Mb
+        100000000: [1000000, "Mb"], # 100 Mb
+        1000000000: [1000000000, "Gb"], # 1 Gb
+        10000000000: [1000000000, "Gb"], # 10 Gb
+        100000000000: [1000000000, "Gb"], # 100 Gb
+        1000000000000: [1000000000000, "Tb"], # 1 Tb
+        10000000000000: [1000000000000, "Tb"], # 10 Tb
+        100000000000000: [1000000000000, "Tb"], # 100 Tb
+        1000000000000000: [1000000000000000, "Pb"] # that's got to future-proof it for a while
+    }
     
     @staticmethod
     def bin_values(values, windowSize, summariseMethod=np.sum):
@@ -175,6 +197,48 @@ class Plot:
         else:
             raise TypeError(f"colourMap must be a string from {ACCEPTED_COLOUR_MAPS}, not '{value}'")
     
+    @property
+    def cmap(self):
+        return getattr(plt.cm, self.colourMap)
+    
+    @property
+    def width(self):
+        if self._width is None:
+            return Plot.STANDARD_DIMENSION
+        return self._width
+    
+    @width.setter
+    def width(self, value):
+        if value == None:
+            self._width = None
+            return
+        else:
+            if not isinstance(value, int):
+                raise TypeError("width must be an integer")
+            if value < 1:
+                raise ValueError(f"width must be >= 1")
+            
+            self._width = value
+    
+    @property
+    def height(self):
+        if self._height is None:
+            return Plot.STANDARD_DIMENSION
+        return self._height
+    
+    @height.setter
+    def height(self, value):
+        if value == None:
+            self._height = None
+            return
+        else:
+            if not isinstance(value, int):
+                raise TypeError("height must be an integer")
+            if value < 1:
+                raise ValueError(f"height must be >= 1")
+
+            self._height = value
+    
     def plot(self):
         raise NotImplementedError("plot() must be implemented in subclasses")
 
@@ -316,7 +380,7 @@ class GenesPlot(Plot):
         
         return macs
     
-    def maf(self):
+    def maf(self, geneID):
         '''
         Returns the minor allele frequency (MAF) of SNPs overlapping the specified gene.
         This function returns an np.array with length equal to the number of windows
@@ -351,7 +415,7 @@ class GenesPlot(Plot):
         
         return mafs
     
-    def callrate(self):
+    def callrate(self, geneID):
         '''
         Returns the callrate of SNPs overlapping the specified gene.
         This function returns an np.array with length equal to the number of windows
@@ -386,7 +450,7 @@ class GenesPlot(Plot):
         
         return callrates
     
-    def het(self):
+    def het(self, geneID):
         '''
         Returns the proportion of heterozygous sample genotypes overlapping the specified gene.
         This function returns an np.array with length equal to the number of windows
@@ -421,12 +485,91 @@ class GenesPlot(Plot):
         
         return hets
     
-    def plot(self):
+    def plot(self, outputFileName, idsToPlot=None, typesToPlot=["gene"]):
         '''
         This method should be implemented to create a plot of the specified statistic
         for the genes in the GFF3 file.
+        
+        Parameters:
+            outputFileName -- a string indicating the location to write plot output to;
+                              assumes file name is pre-validated to ensure no overwriting
+                              and to have a valid filename suffix to control the file format
+            idsToPlot -- a list of strings, corresponding to GFF3 features that should
+                         be plotted; OR None to plot every feature in self.gff3.ftypes
+            typesToPlot -- a list of strings, corresponding to feature types indexed
+                           in self.gff3.ftypes, which are to be presented herein.
         '''
-        raise NotImplementedError("plot() not yet implemented in GenesPlot subclass")
+        SPACING = 0.1
+        
+        # Get gene ids for plotting
+        if idsToPlot == None:
+            idsToPlot = [ f.ID for ftype in typesToPlot for f in self.gff3.ftypes[ftype] ]
+        
+        # Obtain data for plotting
+        dataFunction = getattr(self, self.statistic)
+        geneArrays = []
+        for geneID in idsToPlot:
+            geneArrays.append(dataFunction(geneID))
+        
+        # Sort data from longest to shortest
+        geneArrays.sort(key = lambda x: len(x))
+        
+        # Obtain the minimum and maximum values being plotted
+        minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
+        for geneData in geneArrays:
+            geneMin, geneMax = np.min(geneData), np.max(geneData)
+            if geneMin < minValue:
+                minValue = geneMin
+            if geneMax > maxValue:
+                maxValue = geneMax
+            if len(geneData) > maxLen:
+                maxLen = len(geneData)
+        
+        # Establish colour map
+        norm = matplotlib.colors.Normalize(vmin=minValue, vmax=maxValue)
+        
+        # Configure plot
+        fig = plt.figure(figsize=(self.width, self.height), tight_layout=True)
+        ax = plt.axes()
+        
+        # Configure x-axis labels
+        if self.windowSize == 1:
+            ax.set_xlabel(f"Length (bp)", fontweight="bold")
+        else:
+            divisor, unit = Plot.INTERVALS[10 ** (len(str(self.windowSize)) - 1)]
+            ax.set_xlabel(f"Window number ({self.windowSize} {unit} step and width)", fontweight="bold")
+        
+        ax.set_xlim(0, maxLen) # maxLen implicitly adds +1 which includes the last bin
+        
+        # Plot each gene
+        ongoingCount = 0.5 # this centers the contig label
+        for y in geneArrays:
+            xranges = [ (x, 1) for x in np.arange(0, len(y)) ]
+            
+            # Plot ideogram
+            ax.broken_barh(xranges, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
+            ongoingCount += 1
+        ax.set_ylim(0.5+SPACING, ongoingCount-SPACING)
+        
+        # Indicate y-axis labels
+        ax.set_ylabel("") # no y-axis title label
+        ax.set_yticks(range(1, len(idsToPlot)+1))
+        ax.set_yticklabels(idsToPlot)
+        
+        # Show the colour scale legend
+        sm = plt.cm.ScalarMappable(cmap=self.cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, orientation="vertical",
+                     label="SNP number" if self.statistic == "snpnumber" else \
+                            "Minor Allele Count" if self.statistic == "mac" else \
+                            "Minor Allele Frequency" if self.statistic == "maf" else \
+                            "Genotype Call Rate" if self.statistic == "callrate" else \
+                            "Heterozygosity" if self.statistic == "het" else \
+                            "labeltypenothandled")
+        
+        # Save output file
+        plt.savefig(outputFileName)
+        plt.close()
 
 class ChromosomesPlot(Plot):
     def __init__(self, statistic, feature, windowSize, vcf, gff3=None, genomeFile=None,
@@ -439,3 +582,15 @@ class ChromosomesPlot(Plot):
         for the chromosomes in the genome file.
         '''
         raise NotImplementedError("plot() not yet implemented in ChromosomesPlot subclass")
+
+class MSAPlot(Plot):
+    def __init__(self, statistic, windowSize, vcf, gff3=None, genomeFile=None,
+                 width=None, height=None):
+        super().__init__(statistic, "genes", windowSize, vcf, gff3, genomeFile, width, height)
+    
+    def plot(self):
+        '''
+        This method should be implemented to create a plot of the specified statistic
+        for the chromosomes in the genome file.
+        '''
+        raise NotImplementedError("plot() not yet implemented in MSAPlot subclass")

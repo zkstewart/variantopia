@@ -85,6 +85,13 @@ def main():
                          a size of 1 will plot the statistic for each nucleotide position
                          individually, while larger sizes will summarise the statistic
                          over that many basepairs in length.""")
+    pparser.add_argument("--ids", dest="idsToPlot",
+                         required=False,
+                         nargs="+",
+                         help="""Optionally, specify the IDs of genes or chromosomes
+                         to limit plotting to; alternatively, you may specify file
+                         name(s) which list these IDs, one per line.""",
+                         default=None)
     pparser.add_argument("--genome", dest="genomeFile",
                          required=False,
                          help="Specify genome file if '-f chromosomes' is used",
@@ -249,7 +256,7 @@ def main():
         validate_h(args)
     elif args.mode == "plot":
         print("## variantopia.py - plot ##")
-        validate_p(args)
+        validate_p(args) # sets args.ids
     elif args.mode == "reformat":
         print("## variantopia.py - reformat ##")
         validate_r(args)

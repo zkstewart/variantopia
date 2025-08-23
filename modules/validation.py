@@ -1,6 +1,13 @@
 import os
 
 # Plot mode
+def parse_text_list(fileName):
+    ids = []
+    with open(fileName, "r") as fileIn:
+        for line in fileIn:
+            ids.append(line.rstrip("\r\n\t "))
+    return ids
+
 def validate_p(args):
     '''
     Validation for arguments common to all "plot" mode commands.
@@ -26,6 +33,17 @@ def validate_p(args):
         args.genomeFile = os.path.abspath(args.genomeFile)
         if not os.path.isfile(args.genomeFile):
             raise FileNotFoundError(f"Genome file (--genome {args.genomeFile}) does not exist!")
+    
+    # Validate --ids values
+    args.ids = []
+    if args.idsToPlot != None:
+        for value in args.idsToPlot:
+            if not os.path.isfile(value):
+                args.ids.append(value)
+            else:
+                args.ids.extend(parse_text_list(value))
+    if args.ids == []:
+        args.ids = None # None will flag that no ID filtering should occur
     
     # Validate numeric arguments
     if args.windowSize < 1:
