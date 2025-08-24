@@ -310,180 +310,63 @@ class GenesPlot(Plot):
             geneVariants.extend(self.vcf.query(contig, (start, end)))
         return geneVariants
     
-    def snpnumber(self, geneID):
+    def get_x_y(self, geneID):
         '''
-        Returns the number of SNPs overlapping the specified gene.
-        This function returns an np.array with length equal to the number of
-        windows needed to cover the gene length, where each value indicates the
-        number of SNPs overlapping that window.
+        Returns the x list and y array needed for broken_barh plotting of variant/window
+        statistics. Method of operation is dictated by self.statistic.
+        Returned objects have a length equal to the number of windows needed to cover
+        the gene length, where the y array values indicate the individual (self.windowSize==1)
+        or averaged (self.windowSize>1) variant statistic
         
         Parameters:
             geneID -- a string indicating the gene ID
         Returns:
-            snps -- a numpy array with length equal to the number of windows
-                    that the gene length divides into, with each value indicating
-                    the number of SNPs overlapping that window. Serves
-                    as the 'y' values for plotting.
+            x -- a list containing tuples of (x, 1) where x is the position index
+                 and 1 is the length of the position as needed by broken_barh
+            y -- a np.array containing the statFunction transformed values for
+                 each variant/window
         '''
+        # Determine variant and window functions from self.statistic
+        if self.statistic == "snpnumber":
+            variantFunction = lambda x: 1
+            windowFunction = np.sum
+        elif self.statistic == "mac":
+            variantFunction = VCFTopia.calculate_mac
+            windowFunction = np.sum
+        elif self.statistic == "maf":
+            variantFunction = VCFTopia.calculate_maf
+            windowFunction = np.sum
+        elif self.statistic == "callrate":
+            variantFunction = VCFTopia.calculate_callrate
+            windowFunction = np.sum
+        elif self.statistic == "het":
+            variantFunction = VCFTopia.calculate_heterozygosity
+            windowFunction = np.sum
+        else:
+            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .get_x_y")
+        
         # Get gene coordinates and the variants overlapping them
         contig, coordinates = self.gene(geneID)
         
-        # Lay out the SNPs in a numpy array
-        snps = []
-        for coordinate in coordinates:
-            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=int)
-            variants = self.variants(contig, [coordinate])
-            for variant in variants:
-                position = variant.POS - coordinate[0]
-                coordsArray[position] = 1
-            snps.append(coordsArray)
-        snps = np.concatenate(snps)
-        
-        # Bin the SNPs to the specified window size
-        if self.windowSize > 1:
-            snps = Plot.bin_values(snps, self.windowSize, summariseMethod=np.sum)
-        
-        return snps
-    
-    def mac(self, geneID):
-        '''
-        Returns the minor allele count (MAC) of SNPs overlapping the specified gene.
-        This function returns an np.array with length equal to the number of windows
-        needed to cover the gene length, where each value indicates the averaged MAC
-        of SNPs overlapping that window.
-        
-        Parameters:
-            geneID -- a string indicating the gene ID
-        Returns:
-            macs -- a numpy array with length equal to the number of windows
-                    that the gene length divides into, with each value indicating
-                    the averaged MAC of SNPs overlapping that window. Serves
-                    as the 'y' values for plotting.
-        '''
-        # Get gene coordinates and the variants overlapping them
-        contig, coordinates = self.gene(geneID)
-        
-        # Lay out the MACs in a numpy array
-        macs = []
-        for coordinate in coordinates:
-            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=int)
-            variants = self.variants(contig, [coordinate])
-            for variant in variants:
-                position = variant.POS - coordinate[0]
-                coordsArray[position] = VCFTopia.calculate_mac(variant)
-            macs.append(coordsArray)
-        macs = np.concatenate(macs)
-        
-        # Bin the MACs to the specified window size
-        if self.windowSize > 1:
-            macs = Plot.bin_values(macs, self.windowSize, summariseMethod=np.mean)
-        
-        return macs
-    
-    def maf(self, geneID):
-        '''
-        Returns the minor allele frequency (MAF) of SNPs overlapping the specified gene.
-        This function returns an np.array with length equal to the number of windows
-        needed to cover the gene length, where each value indicates the averaged MAF
-        of SNPs overlapping that window.
-        
-        Parameters:
-            geneID -- a string indicating the gene ID
-        Returns:
-            mafs -- a numpy array with length equal to the number of windows
-                    that the gene length divides into, with each value indicating
-                    the averaged MAF of SNPs overlapping that window. Serves
-                    as the 'y' values for plotting.
-        '''
-        # Get gene coordinates and the variants overlapping them
-        contig, coordinates = self.gene(geneID)
-        
-        # Lay out the MAFs in a numpy array
-        mafs = []
+        # Lay out the y values in a numpy array
+        y = []
         for coordinate in coordinates:
             coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
             variants = self.variants(contig, [coordinate])
             for variant in variants:
                 position = variant.POS - coordinate[0]
-                coordsArray[position] = VCFTopia.calculate_maf(variant)
-            mafs.append(coordsArray)
-        mafs = np.concatenate(mafs)
+                coordsArray[position] = variantFunction(variant)
+            y.append(coordsArray)
+        y = np.concatenate(y)
         
         # Bin the MAFs to the specified window size
         if self.windowSize > 1:
-            mafs = Plot.bin_values(mafs, self.windowSize, summariseMethod=np.mean)
+            y = Plot.bin_values(y, self.windowSize, summariseMethod=windowFunction)
         
-        return mafs
-    
-    def callrate(self, geneID):
-        '''
-        Returns the callrate of SNPs overlapping the specified gene.
-        This function returns an np.array with length equal to the number of windows
-        needed to cover the gene length, where each value indicates the averaged callrate
-        of SNPs overlapping that window.
+        # Create the x array
+        x = [ (i, 1) for i in np.arange(0, len(y)) ]
         
-        Parameters:
-            geneID -- a string indicating the gene ID
-        Returns:
-            callrates -- a numpy array with length equal to the number of windows
-                         that the gene length divides into, with each value indicating
-                         the averaged callrate of SNPs overlapping that window. Serves
-                         as the 'y' values for plotting.
-        '''
-        # Get gene coordinates and the variants overlapping them
-        contig, coordinates = self.gene(geneID)
-        
-        # Lay out the callrates in a numpy array
-        callrates = []
-        for coordinate in coordinates:
-            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
-            variants = self.variants(contig, [coordinate])
-            for variant in variants:
-                position = variant.POS - coordinate[0]
-                coordsArray[position] = VCFTopia.calculate_callrate(variant)
-            callrates.append(coordsArray)
-        callrates = np.concatenate(callrates)
-        
-        # Bin the MAFs to the specified window size
-        if self.windowSize > 1:
-            callrates = Plot.bin_values(callrates, self.windowSize, summariseMethod=np.mean)
-        
-        return callrates
-    
-    def het(self, geneID):
-        '''
-        Returns the proportion of heterozygous sample genotypes overlapping the specified gene.
-        This function returns an np.array with length equal to the number of windows
-        needed to cover the gene length, where each value indicates the averaged heterozygosity
-        of SNPs overlapping that window.
-        
-        Parameters:
-            geneID -- a string indicating the gene ID
-        Returns:
-            hets -- a numpy array with length equal to the number of windows
-                    that the gene length divides into, with each value indicating
-                    the averaged heterozygosity of SNPs overlapping that window. Serves
-                    as the 'y' values for plotting.
-        '''
-        # Get gene coordinates and the variants overlapping them
-        contig, coordinates = self.gene(geneID)
-        
-        # Lay out the hets in a numpy array
-        hets = []
-        for coordinate in coordinates:
-            coordsArray = np.zeros(coordinate[1] - coordinate[0] + 1, dtype=float)
-            variants = self.variants(contig, [coordinate])
-            for variant in variants:
-                position = variant.POS - coordinate[0]
-                coordsArray[position] = VCFTopia.calculate_heterozygosity(variant)
-            hets.append(coordsArray)
-        hets = np.concatenate(hets)
-        
-        # Bin the MAFs to the specified window size
-        if self.windowSize > 1:
-            hets = Plot.bin_values(hets, self.windowSize, summariseMethod=np.mean)
-        
-        return hets
+        return x, y
     
     def plot(self, outputFileName, idsToPlot=None, typesToPlot=["gene"]):
         '''
@@ -506,24 +389,23 @@ class GenesPlot(Plot):
             idsToPlot = [ f.ID for ftype in typesToPlot for f in self.gff3.ftypes[ftype] ]
         
         # Obtain data for plotting
-        dataFunction = getattr(self, self.statistic)
-        geneArrays = []
+        geneArrays = [] # contains [[x1, y1], [x2, y2], ...]
         for geneID in idsToPlot:
-            geneArrays.append(dataFunction(geneID))
+            geneArrays.append(self.get_x_y(geneID))
         
         # Sort data from longest to shortest
-        geneArrays.sort(key = lambda x: len(x))
+        geneArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
         
         # Obtain the minimum and maximum values being plotted
         minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
-        for geneData in geneArrays:
-            geneMin, geneMax = np.min(geneData), np.max(geneData)
+        for x, y in geneArrays:
+            geneMin, geneMax = np.min(y), np.max(y)
             if geneMin < minValue:
                 minValue = geneMin
             if geneMax > maxValue:
                 maxValue = geneMax
-            if len(geneData) > maxLen:
-                maxLen = len(geneData)
+            if len(y) > maxLen:
+                maxLen = len(y)
         
         # Establish colour map
         norm = matplotlib.colors.Normalize(vmin=minValue, vmax=maxValue)
@@ -538,16 +420,12 @@ class GenesPlot(Plot):
         else:
             divisor, unit = Plot.INTERVALS[10 ** (len(str(self.windowSize)) - 1)]
             ax.set_xlabel(f"Window number ({self.windowSize} {unit} step and width)", fontweight="bold")
-        
         ax.set_xlim(0, maxLen) # maxLen implicitly adds +1 which includes the last bin
         
         # Plot each gene
         ongoingCount = 0.5 # this centers the contig label
-        for y in geneArrays:
-            xranges = [ (x, 1) for x in np.arange(0, len(y)) ]
-            
-            # Plot ideogram
-            ax.broken_barh(xranges, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
+        for x, y in geneArrays:
+            ax.broken_barh(x, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
             ongoingCount += 1
         ax.set_ylim(0.5+SPACING, ongoingCount-SPACING)
         
@@ -561,11 +439,11 @@ class GenesPlot(Plot):
         sm.set_array([])
         fig.colorbar(sm, ax=ax, orientation="vertical",
                      label="SNP number" if self.statistic == "snpnumber" else \
-                            "Minor Allele Count" if self.statistic == "mac" else \
-                            "Minor Allele Frequency" if self.statistic == "maf" else \
-                            "Genotype Call Rate" if self.statistic == "callrate" else \
-                            "Heterozygosity" if self.statistic == "het" else \
-                            "labeltypenothandled")
+                           "Minor Allele Count" if self.statistic == "mac" else \
+                           "Minor Allele Frequency" if self.statistic == "maf" else \
+                           "Genotype Call Rate" if self.statistic == "callrate" else \
+                           "Heterozygosity" if self.statistic == "het" else \
+                           "labeltypenothandled")
         
         # Save output file
         plt.savefig(outputFileName)
