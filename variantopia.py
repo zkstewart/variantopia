@@ -9,7 +9,9 @@ import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_p, \
+    validate_m, validate_m_plot, \
     validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
+from modules.msa import msa_to_plot
 from modules.vcf import VCFTopia
 from modules.gff3 import GFF3Topia
 from modules.plot import GenesPlot, ChromosomesPlot
@@ -57,6 +59,50 @@ def main():
                                     add_help=False,
                                     help="Haplotype analysis")
     hparser.set_defaults(func=hmain)
+    
+    # MSA mode
+    mparser = subparsers.add_parser("msa",
+                                    parents=[p],
+                                    add_help=False,
+                                    help="MSA variant analysis")
+    mparser.set_defaults(func=mmain)
+    
+    subMSAParsers = mparser.add_subparsers(dest="msaMode",
+                                           required=True)
+    
+    msaplotparser = subMSAParsers.add_parser("plot",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Plot MSA statistics")
+    
+    msaplotparser.add_argument("-i", dest="msaFile",
+                               required=True,
+                               help="Location of MSA file")
+    msaplotparser.add_argument("-o", dest="outputFileName",
+                               required=True,
+                               help="Location to write output file")
+    msaplotparser.add_argument("-s", dest="statistic",
+                               required=True,
+                               choices=["gc", "mac", "maf", "gaprate"],
+                               help="Specify which statistic to plot")
+    msaplotparser.add_argument("--colour", dest="colourMap",
+                               required=False,
+                               choices=["viridis", "Greys", "GnBu", "RdBu"],
+                               help="""Optionally, specify the colour scheme to use for the plot;
+                               default is 'viridis'; refer to
+                               https://matplotlib.org/stable/users/explain/colors/colormaps.html
+                               for examples""",
+                               default="viridis")
+    msaplotparser.add_argument("--width", dest="width",
+                               type=int,
+                               required=False,
+                               help="""Optionally, specify the output plot width (default=10)""",
+                               default=10)
+    msaplotparser.add_argument("--height", dest="height",
+                               type=int,
+                               required=False,
+                               help="""Optionally, specify the output plot height (default=6)""",
+                               default=6)
     
     # Plot mode
     pparser = subparsers.add_parser("plot",
@@ -242,20 +288,27 @@ def main():
                                     parents=[p],
                                     add_help=False,
                                     help="Generate statistics for a VCF file")
-    sparser.set_defaults(func=rmain)
+    sparser.set_defaults(func=smain)
     
     args = subParentParser.parse_args()
     
     # Split into mode-specific functions
     if args.mode == "bayescan":
         print("## variantopia.py - bayescan ##")
+        raise NotImplementedError("Bayescan mode is not yet implemented")
         validate_b(args)
     elif args.mode == "filter":
         print("## variantopia.py - filter ##")
+        raise NotImplementedError("Filter mode is not yet implemented")
         validate_f(args)
     elif args.mode == "haplotype":
         print("## variantopia.py - haplotype ##")
+        raise NotImplementedError("Haplotype mode is not yet implemented")
         validate_h(args)
+    elif args.mode == "msa":
+        print("## variantopia.py - msa ##")
+        validate_m(args)
+        mmain(args)
     elif args.mode == "plot":
         print("## variantopia.py - plot ##")
         validate_p(args) # sets args.ids
@@ -266,7 +319,9 @@ def main():
         rmain(args)
     elif args.mode == "stats":
         print("## variantopia.py - stats ##")
+        raise NotImplementedError("Stats mode is not yet implemented")
         validate_s(args)
+        smain(args)
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
@@ -280,6 +335,15 @@ def fmain(args):
 def hmain(args):
     print("Haplotype analysis complete!")
 
+def mmain(args):
+    # Split into sub-mode-specific functions
+    if args.msaMode == "plot":
+        print("## MSA plotting ##")
+        validate_m_plot(args)
+        msa_to_plot(args)
+    
+    print("MSA analysis complete!")
+
 def pmain(args):
     # Load VCF and GFF3 files
     vcf = VCFTopia(args.vcfFile)
@@ -291,13 +355,13 @@ def pmain(args):
     
     # Initialise plot object
     if args.feature == "genes":
-        print("## variantopia.py - gene statistic genegrams ##")
+        print("## gene statistic genegrams ##")
         plot = GenesPlot(args.statistic, args.feature, args.windowSize,
                          vcf, gff3, args.genomeFile,
                          args.width, args.height
         )
     elif args.feature == "chromosomes":
-        print("## variantopia.py - chromosome statistic ideograms ##")
+        print("## chromosome statistic ideograms ##")
         plot = ChromosomesPlot(args.statistic, args.feature, args.windowSize,
                                vcf, gff3, args.genomeFile,
                                args.width, args.height
@@ -333,6 +397,9 @@ def rmain(args):
         vcf_to_msa(args)
     
     print("Reformatting complete!")
+
+def smain(args):
+    print("Statistics analysis complete!")
 
 if __name__ == "__main__":
     main()

@@ -8,6 +8,36 @@ def parse_text_list(fileName):
             ids.append(line.rstrip("\r\n\t "))
     return ids
 
+def validate_m(args):
+    '''
+    Validation for arguments common to all "msa" mode commands.
+    '''    
+    # Validate MSA file
+    args.msaFile = os.path.abspath(args.msaFile)
+    if not os.path.isfile(args.msaFile):
+        raise FileNotFoundError(f"MSA file (-i {args.msaFile}) does not exist!")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_m_plot(args):
+    '''
+    Validation for arguments used in "msa plot" mode.
+    '''
+    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
+    
+    # Validate numeric arguments
+    if args.width < 1:
+        raise ValueError("--width must be a positive integer greater than 0.")
+    if args.height < 1:
+        raise ValueError("--height must be a positive integer greater than 0.")
+    
+    # Validate output file name
+    if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+
 def validate_p(args):
     '''
     Validation for arguments common to all "plot" mode commands.

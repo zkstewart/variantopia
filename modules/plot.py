@@ -92,11 +92,6 @@ class Plot:
         self.width = width
         self.height = height
         
-        # Figure-related parameters (not to be set by user)
-        self.fig = None
-        self.axs = None
-        self.rowNum = None
-        
         # Default values unset by initialization
         self._colourMap = None
     
@@ -206,7 +201,7 @@ class Plot:
         return getattr(plt.cm, self.colourMap)
     
     @property
-    def variantFunction(self):
+    def statFunction(self):
         if self.statistic == "snpnumber":
             return lambda x: 1
         elif self.statistic == "mac":
@@ -218,7 +213,7 @@ class Plot:
         elif self.statistic == "het":
             return VCFTopia.calculate_heterozygosity
         else:
-            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .variantFunction")
+            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .statFunction")
     
     @property
     def windowFunction(self):
@@ -385,7 +380,7 @@ class GenesPlot(Plot):
             variants = self.variants(contig, [coordinate])
             for variant in variants:
                 position = variant.POS - coordinate[0]
-                coordsArray[position] = self.variantFunction(variant)
+                coordsArray[position] = self.statFunction(variant)
             y.append(coordsArray)
         y = np.concatenate(y)
         
@@ -538,7 +533,7 @@ class ChromosomesPlot(Plot):
             variants = self.variants(contig, [coordinate])
             for variant in variants:
                 position = variant.POS - coordinate[0]
-                coordsArray[position] = self.variantFunction(variant)
+                coordsArray[position] = self.statFunction(variant)
             y.append(coordsArray)
         y = np.concatenate(y)
         
@@ -622,7 +617,7 @@ class ChromosomesPlot(Plot):
                     for mrnaFeature in mrnaFeatures
                 ]
                 ax.scatter(mrnaCentres, [ongoingCount+SPACING]*len(mrnaCentres), marker="v", color="#EA8527")
-            
+                
                 ongoingCount += 1
         ax.set_ylim(0.5+SPACING, ongoingCount-SPACING)
         
@@ -645,15 +640,3 @@ class ChromosomesPlot(Plot):
         # Save output file
         plt.savefig(outputFileName)
         plt.close()
-
-class MSAPlot(Plot):
-    def __init__(self, statistic, windowSize, vcf, gff3=None, genomeFile=None,
-                 width=None, height=None):
-        super().__init__(statistic, "genes", windowSize, vcf, gff3, genomeFile, width, height)
-    
-    def plot(self):
-        '''
-        This method should be implemented to create a plot of the specified statistic
-        for the chromosomes in the genome file.
-        '''
-        raise NotImplementedError("plot() not yet implemented in MSAPlot subclass")
