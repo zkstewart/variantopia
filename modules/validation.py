@@ -53,6 +53,12 @@ def validate_m_plot(args):
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
+def validate_m_report(args):
+    '''
+    Validation for arguments used in "msa report" mode.
+    '''
+    pass # no specific validation needed for 'msa report' mode
+
 def validate_p(args):
     '''
     Validation for arguments common to all "plot" mode commands.

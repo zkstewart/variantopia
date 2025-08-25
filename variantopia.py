@@ -9,9 +9,9 @@ import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_p, \
-    validate_m, validate_m_plot, \
+    validate_m, validate_m_plot, validate_m_report, \
     validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
-from modules.msa import msa_to_plot
+from modules.msa import msa_to_plot, msa_to_variant_report, msa_to_sequence_report
 from modules.vcf import VCFTopia
 from modules.gff3 import GFF3Topia
 from modules.plot import GenesPlot, ChromosomesPlot
@@ -74,7 +74,6 @@ def main():
                                              parents=[p],
                                              add_help=False,
                                              help="Plot MSA statistics")
-    
     msaplotparser.add_argument("-i", dest="msaFiles",
                                required=True,
                                nargs="+",
@@ -113,6 +112,39 @@ def main():
                                required=False,
                                help="""Optionally, specify the output plot height (default=6)""",
                                default=6)
+    
+    msareportparser = subMSAParsers.add_parser("report",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Report MSA variants")
+    msareportparser.add_argument("-i", dest="msaFiles",
+                                 required=True,
+                                 nargs="+",
+                                 help="""Specify the location(s) of MSA FASTA file(s) to plot
+                                 and/or directories containing MSA files which end with
+                                 any of the indicated --suffix values""")
+    msareportparser.add_argument("-f", dest="reportFormat",
+                                 required=True,
+                                 choices=["per_variant", "per_sequence"],
+                                 help="Specify the format of the output report file(s)")
+    msareportparser.add_argument("-o", dest="outputFileName",
+                                 required=True,
+                                 help="Location to write output file")
+    msareportparser.add_argument("--suffix", dest="suffixes",
+                                 required=False,
+                                 nargs="+",
+                                 help="""Optionally, specify one or more suffixes
+                                 to identify MSA files in any directories
+                                 specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                                 default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
+    msareportparser.add_argument("--reportUntilStop", dest="reportUntilStop",
+                                 required=False,
+                                 action="store_true",
+                                 help="""Optionally provide this argument if you do not want to see variants
+                                 reported for a sequence after a stop codon is encountered in that sequence
+                                 (variants will be reported in other sequences if they don't encounter that
+                                 stop codon)""",
+                                 default=False)
     
     # Plot mode
     pparser = subparsers.add_parser("plot",
@@ -351,6 +383,14 @@ def mmain(args):
         print("## MSA plotting ##")
         validate_m_plot(args)
         msa_to_plot(args)
+    elif args.msaMode == "report":
+        validate_m_report(args)
+        if args.reportFormat == "per_variant":
+            print("## per-variant report ##")
+            msa_to_variant_report(args)
+        elif args.reportFormat == "per_sequence":
+            print("## per-sequence report ##")
+            msa_to_sequence_report(args)
     
     print("MSA analysis complete!")
 

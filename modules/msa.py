@@ -7,8 +7,6 @@ from Bio import SeqIO
 
 from .parsing import read_gz_file
 
-#msaFile = "/mnt/f/plant_group/anuradha/upr_annotation/binge/msas/aligned_aa/cluster_0.aa"
-
 class MSATopia:
     def __init__(self, msaFile):
         self.msaFile = msaFile
@@ -32,6 +30,34 @@ class MSATopia:
         residueCounts = dict(sorted(zip([ x.upper() for x in unique ], counts), key=lambda x: x[1], reverse=True)) # x == (residue, count)
         
         return residueCounts
+    
+    @staticmethod
+    def consensus_and_alt_residues(column, asSet=False):
+        '''
+        Takes a pandas Series column and returns a string indicating the consensus residue
+        and a list of strings indicating the alternative residue(s).
+        
+        Parameters:
+            column -- a pd.Series object representing a column of an MSA DataFrame.
+            asSet -- a boolean indicating whether to return the alternatives as a set (True)
+                     or list (False); default is False
+        Returns:
+            consensus -- a string indicating the consensus residue (in uppercase)
+            alternatives -- a list of strings indicating the alternative residues (in uppercase)
+        '''
+        residueCounts = MSATopia.count_residues(column)
+        
+        consensus = None
+        alternatives = []
+        for residue, count in residueCounts.items():
+            if consensus is None:
+                consensus = residue
+            else:
+                alternatives.append(residue)
+        
+        if asSet:
+            alternatives = set(alternatives)
+        return consensus, alternatives
     
     @staticmethod
     def calculate_gc(column):
@@ -412,3 +438,65 @@ def msa_to_plot(args):
     )
     plot.colourMap = args.colourMap
     plot.plot(args.outputFileName)
+
+def msa_to_variant_report(args):
+    with open(args.outputFileName, "w") as fileOut:
+        fileOut.write("#gene\tposition_number\tconsensus_residue\tvariant_residue\tseqs_with_variant\n")
+        
+        for msaFile in args.msaFiles:
+            msa = MSATopia(msaFile)
+            msaID = os.path.basename(msaFile).rsplit(".", maxsplit=1)[0]
+            
+            foundStop = set()
+            for position, column in enumerate(msa.columns):
+                # Get the consensus and alt residue(s)
+                consensus, alt = MSATopia.consensus_and_alt_residues(column, asSet=True)
+                if len(alt) == 0:
+                    continue # no variants at this position
+                
+                # Write out variant information
+                sampleResidueDict = column.to_dict()
+                for altResidue in alt:
+                    hasVariant = sorted([
+                        sampleID
+                        for sampleID, residue in sampleResidueDict.items()
+                        if (not sampleID in foundStop) and (residue.upper() == altResidue)
+                    ])
+                    fileOut.write(f"{msaID}\t{position+1}\t{consensus}\t" +
+                                  f"{altResidue}\t{', '.join(hasVariant)}\n")
+                    
+                    # Conditionally handle reportUntilStop
+                    if args.reportUntilStop and altResidue == "*":
+                        foundStop.update(hasVariant)
+
+def msa_to_sequence_report(args):
+    with open(args.outputFileName, "w") as fileOut:
+        fileOut.write("#gene\tsequence_id\tvariants\n")
+        
+        for msaFile in args.msaFiles:
+            msa = MSATopia(msaFile)
+            msaID = os.path.basename(msaFile).rsplit(".", maxsplit=1)[0]
+            orderedSampleIDs = sorted(msa.rowNames)
+            
+            # Find all variants in the MSA
+            sampleVariantsDict = { sampleID : [] for sampleID in msa.rowNames }
+            foundStop = set()
+            for position, column in enumerate(msa.columns):
+                # Get the consensus and alt residue(s)
+                consensus, alt = MSATopia.consensus_and_alt_residues(column, asSet=True)
+                if len(alt) == 0:
+                    continue # no variants at this position
+                
+                # Write out variant information
+                for sampleID, residue in column.to_dict().items():
+                    if (not sampleID in foundStop) and (residue.upper() in alt):
+                        sampleVariantsDict[sampleID].append(f"{position+1}:{consensus}:{residue}")
+                    if args.reportUntilStop and residue == "*":
+                        foundStop.add(sampleID)
+            
+            # Write out sequence information
+            for sampleID in orderedSampleIDs:
+                variantList = sampleVariantsDict[sampleID]
+                if len(variantList) == 0:
+                    continue # omit sequences with no variants
+                fileOut.write(f"{msaID}\t{sampleID}\t{', '.join(variantList)}\n")
