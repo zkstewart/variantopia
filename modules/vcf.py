@@ -3,7 +3,7 @@
 # Classes and functions for parsing VCF files into suitable
 # data structures for variantopia.
 
-import os, shutil, subprocess
+import os, shutil, subprocess, warnings
 from cyvcf2 import VCF
 from collections import Counter
 
@@ -369,15 +369,17 @@ class VCFTopia:
                         If None, queries the entire chromosome.
         '''
         queryRange = f"{chrom}:{startEnd[0]}-{startEnd[1]}" if startEnd else chrom
-        try:
-            yield from self.vcf(queryRange)
-        except AssertionError as e:
-            if "error loading tabix index" in str(e):
-                print("Attempting to index the VCF file due to an indexing error...")
-                self.index()  # Attempt to index the VCF file if the error is related to indexing
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning) # ignore warnings from cyvcf2 about 'no intervals found'
+            try:
                 yield from self.vcf(queryRange)
-            else:
-                raise e # re-raise the exception if it's not related to indexing
+            except AssertionError as e:
+                if "error loading tabix index" in str(e):
+                    print("Attempting to index the VCF file due to an indexing error...")
+                    self.index()  # Attempt to index the VCF file if the error is related to indexing
+                    yield from self.vcf(queryRange)
+                else:
+                    raise e # re-raise the exception if it's not related to indexing
     
     def as_genotype_dict(self, multialleles=True, indels=True, mnps=True):
         '''

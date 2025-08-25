@@ -144,7 +144,7 @@ class Plot:
             self._genomeFile = None
         elif os.path.isfile(value):
             self._genomeFile = value
-            self.genomeLengths = value
+            self._genomeLengths = None # blank this so it is reloaded when needed
         else:
             raise FileNotFoundError(f"Genome file '{value}' does not exist.")
     
@@ -176,6 +176,10 @@ class Plot:
     
     @gff3.setter
     def gff3(self, value):
+        if value == None:
+            self._gff3 = None
+            return
+        
         if not hasattr(value, "isGFF3Topia") or not value.isGFF3Topia:
             raise TypeError("gff3 must be a GFF3Topia object.")
         

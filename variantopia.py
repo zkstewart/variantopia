@@ -281,12 +281,15 @@ def hmain(args):
     print("Haplotype analysis complete!")
 
 def pmain(args):
+    # Load VCF and GFF3 files
     vcf = VCFTopia(args.vcfFile)
     if args.gff3File != None:
         gff3 = GFF3Topia(args.gff3File)
         gff3.create_ncls_index(["gene"])
     else:
         gff3 = None
+    
+    # Initialise plot object
     if args.feature == "genes":
         print("## variantopia.py - gene statistic genegrams ##")
         plot = GenesPlot(args.statistic, args.feature, args.windowSize,
@@ -299,6 +302,9 @@ def pmain(args):
                                vcf, gff3, args.genomeFile,
                                args.width, args.height
         )
+    
+    # Generate plot
+    plot.colourMap = args.colourMap
     plot.plot(args.outputFileName, idsToPlot=args.ids)
     
     print("Plotting complete!")
