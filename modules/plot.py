@@ -424,11 +424,11 @@ class GenesPlot(Plot):
         # Obtain the minimum and maximum values being plotted
         minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
         for x, y in geneArrays:
-            geneMin, geneMax = np.min(y), np.max(y)
-            if geneMin < minValue:
-                minValue = geneMin
-            if geneMax > maxValue:
-                maxValue = geneMax
+            statMin, statMax = np.min(y), np.max(y)
+            if statMin < minValue:
+                minValue = statMin
+            if statMax > maxValue:
+                maxValue = statMax
             if len(y) > maxLen:
                 maxLen = len(y)
         
@@ -445,7 +445,7 @@ class GenesPlot(Plot):
         else:
             divisor, unit = Plot.INTERVALS[10 ** (len(str(self.windowSize)) - 1)]
             ax.set_xlabel(f"Window number ({self.windowSize} {unit} step and width)", fontweight="bold")
-        ax.set_xlim(0, maxLen) # maxLen implicitly adds +1 which includes the last bin
+        ax.set_xlim(0, maxLen)
         
         # Plot each gene
         ongoingCount = 0.5 # this centers the contig label
@@ -575,11 +575,11 @@ class ChromosomesPlot(Plot):
         # Obtain the minimum and maximum values being plotted
         minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
         for x, y in contigArrays:
-            geneMin, geneMax = np.min(y), np.max(y)
-            if geneMin < minValue:
-                minValue = geneMin
-            if geneMax > maxValue:
-                maxValue = geneMax
+            statMin, statMax = np.min(y), np.max(y)
+            if statMin < minValue:
+                minValue = statMin
+            if statMax > maxValue:
+                maxValue = statMax
             if len(y) > maxLen:
                 maxLen = len(y)
         
@@ -596,7 +596,7 @@ class ChromosomesPlot(Plot):
         else:
             divisor, unit = Plot.INTERVALS[10 ** (len(str(self.windowSize)) - 1)]
             ax.set_xlabel(f"Window number ({self.windowSize} {unit} step and width)", fontweight="bold")
-        ax.set_xlim(0, maxLen) # maxLen implicitly adds +1 which includes the last bin
+        ax.set_xlim(0, maxLen)
         
         # Plot each chromosome
         ongoingCount = 0.5 # this centers the contig label

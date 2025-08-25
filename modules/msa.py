@@ -173,13 +173,13 @@ class MSATopia:
 class MSAPlot:
     STANDARD_DIMENSION = 5
     
-    def __init__(self, statistic, msa,
+    def __init__(self, msaFiles, statistic,
                  width=None, height=None):
         '''
         Parameters:
+            msaFiles -- a list of strings indicating the MSA files to plot
             statistic -- a string indicating the statistic to plot; currently supported
                          values are "gc", "mac", "maf", "gaprate"
-            msa -- a MSATopia object containing the MSA data to plot
             width -- an integer indicating the width of the plot in inches; if None,
                      defaults to MSAPlot.STANDARD_DIMENSION * number of regions
             height -- an integer indicating the height of the plot in inches; if None,
@@ -189,7 +189,7 @@ class MSAPlot:
         self.statistic = statistic
         
         # Data files
-        self.msa = msa
+        self.msaFiles = msaFiles
         
         # Aesthetic parameters
         self.width = width
@@ -197,6 +197,22 @@ class MSAPlot:
         
         # Default values unset by initialization
         self._colourMap = None
+    
+    @property
+    def msaFiles(self):
+        return self._msaFiles
+    
+    @msaFiles.setter
+    def msaFiles(self, value):
+        if not isinstance(value, list):
+            raise TypeError("msaFiles must be a list of strings")
+        for item in value:
+            if not isinstance(item, str):
+                raise TypeError("msaFiles must be a list of strings")
+            if not os.path.isfile(item):
+                raise FileNotFoundError(f"msaFile '{item}' is not a file")
+        
+        self._msaFiles = value
     
     @property
     def statistic(self):
@@ -222,16 +238,6 @@ class MSAPlot:
             return MSATopia.calculate_gaprate
         else:
             raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .statFunction")
-    
-    @property
-    def msa(self):
-        return self._msa
-    
-    @msa.setter
-    def msa(self, value):
-        if not hasattr(value, "isMSATopia") or not value.isMSATopia:
-            raise TypeError("msa must be a MSATopia object.")
-        self._msa = value
     
     @property
     def colourMap(self):
@@ -302,22 +308,27 @@ class MSAPlot:
 
             self._height = value
     
-    def get_x_y(self):
+    def get_x_y(self, msaFile):
         '''
         Returns the x list and y array needed for broken_barh plotting of MSA
         statistics. Method of operation is dictated by self.statistic.
         Returned objects have a length equal to the number of residues in the alignment,
         where the y array values indicate the relevant statistic for each position.
         
+        Parameters:
+            msaFile -- a string indicating the MSA file to plot
         Returns:
             x -- a list containing tuples of (x, 1) where x is the position index
                  and 1 is the length of the position as needed by broken_barh
             y -- a np.array containing the statFunction transformed values for
                  each variant/window
         '''
+        # Load the MSA
+        msa = MSATopia(msaFile)
+        
         # Lay out the y values in a numpy array
         y = []
-        for i, column in enumerate(self.msa.columns):
+        for i, column in enumerate(msa.columns):
             y.append(self.statFunction(column))
         y = np.array(y, dtype=self.dtype)
         
@@ -338,11 +349,25 @@ class MSAPlot:
         SPACING = 0.1
         
         # Obtain data for plotting
-        x, y = self.get_x_y()
+        msaLabels = []
+        msaArrays = []
+        for msaFile in self.msaFiles:
+            msaLabels.append(os.path.basename(msaFile).rsplit(".", maxsplit=1)[0])
+            msaArrays.append(self.get_x_y(msaFile))
+        
+        # Sort data from longest to shortest
+        msaArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
         
         # Obtain the minimum and maximum values being plotted
-        minValue = np.min(y)
-        maxValue = np.max(y)
+        minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
+        for x, y in msaArrays:
+            statMin, statMax = np.min(y), np.max(y)
+            if statMin < minValue:
+                minValue = statMin
+            if statMax > maxValue:
+                maxValue = statMax
+            if len(y) > maxLen:
+                maxLen = len(y)
         
         # Establish colour map
         norm = matplotlib.colors.Normalize(vmin=minValue, vmax=maxValue)
@@ -353,18 +378,19 @@ class MSAPlot:
         
         # Configure x-axis labels
         ax.set_xlabel(f"Length (bp)", fontweight="bold")
-        ax.set_xlim(0, len(y))
+        ax.set_xlim(0, maxLen)
         
-        # Plot MSA statistics
+        # Plot each MSA
         ongoingCount = 0.5 # this centers the contig label
-        ax.broken_barh(x, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
-        ongoingCount += 1
+        for x, y in msaArrays:
+            ax.broken_barh(x, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
+            ongoingCount += 1
         ax.set_ylim(0.5+SPACING, ongoingCount-SPACING)
         
         # Indicate y-axis labels
         ax.set_ylabel("") # no y-axis title label
-        ax.set_yticks([])
-        ax.set_yticklabels([])
+        ax.set_yticks(range(1, len(msaLabels)+1))
+        ax.set_yticklabels(msaLabels)
         
         # Show the colour scale legend
         sm = plt.cm.ScalarMappable(cmap=self.cmap, norm=norm)
@@ -381,8 +407,7 @@ class MSAPlot:
         plt.close()
 
 def msa_to_plot(args):
-    msa = MSATopia(args.msaFile)
-    plot = MSAPlot(statistic=args.statistic, msa=msa,
+    plot = MSAPlot(args.msaFiles, statistic=args.statistic,
                    width=args.width, height=args.height
     )
     plot.colourMap = args.colourMap

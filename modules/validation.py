@@ -11,11 +11,26 @@ def parse_text_list(fileName):
 def validate_m(args):
     '''
     Validation for arguments common to all "msa" mode commands.
-    '''    
+    '''
     # Validate MSA file
-    args.msaFile = os.path.abspath(args.msaFile)
-    if not os.path.isfile(args.msaFile):
-        raise FileNotFoundError(f"MSA file (-i {args.msaFile}) does not exist!")
+    msaFiles = []
+    for location in args.msaFiles:
+        location = os.path.abspath(location)
+        
+        if os.path.isfile(location):
+            msaFiles.append(location)
+        elif os.path.isdir(location):
+            foundAny = False
+            for f in os.listdir(location):
+                if any([ f.endswith(suffix) for suffix in args.suffixes ]):
+                    msaFiles.append(os.path.join(location, f))
+                    foundAny = True
+            if not foundAny:
+                raise FileNotFoundError(f"No FASTA files found in directory '{location}' ending with a --suffix value")
+        # Error out if location does not exist
+        else:
+            raise FileNotFoundError(f"-i file or directory '{location}' not found!")
+    args.msaFiles = msaFiles
     
     # Validate output file name
     args.outputFileName = os.path.abspath(args.outputFileName)

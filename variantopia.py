@@ -75,9 +75,12 @@ def main():
                                              add_help=False,
                                              help="Plot MSA statistics")
     
-    msaplotparser.add_argument("-i", dest="msaFile",
+    msaplotparser.add_argument("-i", dest="msaFiles",
                                required=True,
-                               help="Location of MSA file")
+                               nargs="+",
+                               help="""Specify the location(s) of MSA FASTA file(s) to plot
+                               and/or directories containing MSA files which end with
+                               any of the indicated --suffix values""")
     msaplotparser.add_argument("-o", dest="outputFileName",
                                required=True,
                                help="Location to write output file")
@@ -85,6 +88,13 @@ def main():
                                required=True,
                                choices=["gc", "mac", "maf", "gaprate"],
                                help="Specify which statistic to plot")
+    msaplotparser.add_argument("--suffix", dest="suffixes",
+                               required=False,
+                               nargs="+",
+                               help="""Optionally, specify one or more suffixes
+                               to identify MSA files in any directories
+                               specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                               default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
     msaplotparser.add_argument("--colour", dest="colourMap",
                                required=False,
                                choices=["viridis", "Greys", "GnBu", "RdBu"],
