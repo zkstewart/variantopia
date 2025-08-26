@@ -68,7 +68,7 @@ On the command line, you can always ask variantopia to provide help information 
 ```
 python /location/of/variantopia.py msa -h
 python /location/of/variantopia.py plot -h
-python /location/of/variantopia_post.py reformat table -h
+python /location/of/variantopia.py reformat table -h
 ... etc ...
 ```
 
