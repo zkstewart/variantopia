@@ -588,12 +588,13 @@ class VCFTopia:
             # Calculate DP-AD value (useful for ploidy change inference)
             if len(statsDict["DP"]) != 0 and len(statsDict["AD"]) != 0:
                 statsDict["DP-AD"] = statsDict["DP"] - statsDict["AD"]
-                statsDict["DP-AD_mean"] = np.mean(statsDict["DP-AD"])
                 statsDict["DP-AD_median"] = np.median(statsDict["DP-AD"])
+                statsDict["DP-AD_mean"] = np.mean(statsDict["DP-AD"])
+                
                 del statsDict["DP-AD"] # wipe so it doesn't contaminate the pd.Dataframe
             else:
-                statsDict["DP-AD_mean"] = None
                 statsDict["DP-AD_median"] = None
+                statsDict["DP-AD_mean"] = None
             
             # Wipe AP and DP before later pandas dataframe conversion
             del statsDict["DP"]
