@@ -403,7 +403,7 @@ class MSAPlot:
         ax = plt.axes()
         
         # Configure x-axis labels
-        ax.set_xlabel(f"Length (bp)", fontweight="bold")
+        ax.set_xlabel(f"Length (residues)", fontweight="bold")
         ax.set_xlim(0, maxLen)
         
         # Plot each MSA
