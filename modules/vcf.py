@@ -4,8 +4,11 @@
 # data structures for variantopia.
 
 import os, shutil, subprocess, warnings
+import numpy as np
+import pandas as pd
 from cyvcf2 import VCF
 from collections import Counter
+from copy import deepcopy
 
 class VCFTopia:
     def __init__(self, vcfFile):
@@ -132,7 +135,7 @@ class VCFTopia:
         return homHet["het"] / (homHet["hom"] + homHet["het"]) if (homHet["hom"] + homHet["het"]) > 0 else 0.0
     
     @staticmethod
-    def format_refAlt(variant):
+    def refAlt(variant):
         '''
         Takes a cyvcf2.Variant object and returns a list
         representing the reference and alternate alleles
@@ -148,7 +151,7 @@ class VCFTopia:
         return [variant.REF, *variant.ALT]
     
     @staticmethod
-    def format_genotype_codes(variant):
+    def genotype_codes(variant):
         '''
         Takes a cyvcf2.Variant object and returns a string
         representing the genotype in VCF-encoded format.
@@ -167,17 +170,17 @@ class VCFTopia:
         ]
     
     @staticmethod
-    def format_sample_codes(samples, variant):
+    def sample_codes(samples, variant):
         '''
         Takes a list of sample names (from a VCFTopia.samples property) alongside
         a cyvcf2.Variant object and returns a dictionary where keys are sample names
         and values are strings representing the genotype codes as formatted by
-        VCFTopia.format_genotype_codes.
+        VCFTopia.genotype_codes.
         '''
-        return { sample: code for sample, code in zip(samples, VCFTopia.format_genotype_codes(variant)) }
+        return { sample: code for sample, code in zip(samples, VCFTopia.genotype_codes(variant)) }
     
     @staticmethod
-    def format_genotype_alleles(variant):
+    def genotype_alleles(variant):
         '''
         Takes a cyvcf2.Variant object and returns a string
         representing the genotype by substituting VCF-encoded
@@ -191,7 +194,7 @@ class VCFTopia:
             genotypeAlleles -- a list of strings representing the genotypes as
                                alleles e.g., ["A/A", "A/T", "T/T", ...]
         '''
-        refAlt = VCFTopia.format_refAlt(variant)
+        refAlt = VCFTopia.refAlt(variant)
         return [
             "/".join(refAlt[code] if code != -1 else "." for code in gt[:-1]) if gt[-1] == False else
             "|".join(refAlt[code] if code != -1 else "." for code in gt[:-1])
@@ -199,14 +202,34 @@ class VCFTopia:
         ]
     
     @staticmethod
-    def format_sample_alleles(samples, variant):
+    def sample_alleles(samples, variant):
         '''
         Takes a list of sample names (from a VCFTopia.samples property) alongside
         a cyvcf2.Variant object and returns a dictionary where keys are sample names
         and values are strings representing the genotype alleles as formatted by
-        VCFTopia.format_genotype_alleles.
+        VCFTopia.genotype_alleles.
         '''
-        return { sample: alleles for sample, alleles in zip(samples, VCFTopia.format_genotype_alleles(variant)) }
+        return { sample: alleles for sample, alleles in zip(samples, VCFTopia.genotype_alleles(variant)) }
+    
+    @staticmethod
+    def sample_integers(samples, variant):
+        '''
+        Takes a list of sample names (from a VCFTopia.samples property) alongside
+        a cyvcf2.Variant object and returns a dictionary where keys are sample names
+        and values are the integer genotype lists from variant.genotypes, omitting
+        the final phase boolean
+        '''
+        return { sample: integerList[:-1] for sample, integerList in zip(samples, variant.genotypes) }
+    
+    @staticmethod
+    def sample_format_field(samples, variant, field):
+        '''
+        Takes a list of sample names (from a VCFTopia.samples property) alongside
+        a cyvcf2.Variant object and a value that is found in variant.FORMAT
+        and returns a dictionary where keys are sample names
+        and values are the matching FORMAT value.
+        '''
+        return { sample: alleles for sample, alleles in zip(samples, variant.format(field)) }
     
     @property
     def vcfFile(self):
@@ -407,7 +430,7 @@ class VCFTopia:
         '''
         genotypeDict = {}
         for variant in self:
-            refAlt = VCFTopia.format_refAlt(variant)
+            refAlt = VCFTopia.refAlt(variant)
             
             # Skip variants if applicable
             if (not multialleles) and len(variant.ALT) > 1: # skip multiallelic
@@ -419,7 +442,7 @@ class VCFTopia:
             
             # Store genotype information
             genotypeDict.setdefault(variant.CHROM, {})
-            genotypeDict[variant.CHROM][variant.POS] = [refAlt, VCFTopia.format_genotype_codes(variant)]
+            genotypeDict[variant.CHROM][variant.POS] = [refAlt, VCFTopia.genotype_codes(variant)]
         return genotypeDict
     
     def as_dict(self, multialleles=True, indels=True, mnps=True):
@@ -458,21 +481,152 @@ class VCFTopia:
                 "pos": variant.POS,
                 "ref": ref,
                 "alt": alt,
-                "sampleData": VCFTopia.format_sample_alleles(variant)
+                "sampleData": VCFTopia.sample_alleles(variant)
             }
         return vcfDict
+    
+    def comprehensive_statistics(self):
+        '''
+        Calculates and tallies all potentially relevant statistics on the
+        composition of this VCF file.
+        
+        Note:
+        1) insertion and deletion are not mutually incompatible for a single
+        variant site in cases where multiallelic variants exist
+        2) multiallelic and biallelic variants are mutuallly incompatible;
+        a variant is either biallelic or multiallelic
+        3) the final step of adding a row called "Total" assumes the genome
+        does NOT have an existing contig called "Total"; it would be silly for this
+        to ever be true, but if it is, maybe name your genome contigs something better?
+        
+        Returns:
+            genomeStatsDF -- a pd.Dataframe where rows correspond to individual contigs
+                             (with a final Total row at the bottom) and columns correspond
+                             to integer counts of different variant types
+            sampleStatsDF -- a pd.Dataframe where rows correspond to individual samples
+                             and columns correspond to integer or float values of different
+                             variant statistics
+        '''
+        contigDefault = {"num_variants": 0, "num_multiallelic": 0, "num_biallelic": 0,
+                         "num_insertions": 0, "num_deletions": 0,
+                         "num_snps": 0, "num_mnps": 0}
+        sampleDefault = {"num_called": 0, "num_uncalled": 0,
+                         "num_hom": 0, "num_het": 0,
+                         "DP": [], "AD": []} # lists require dict to be deepcopied later
+        
+        contigStats = {}
+        sampleStats = {}
+        for variant in self:
+            # Store contig-level stats
+            contigStats.setdefault(variant.CHROM, deepcopy(contigDefault))
+            contigStats[variant.CHROM]["num_variants"] += 1
+            
+            if len(variant.ALT) == 1:
+                contigStats[variant.CHROM]["num_biallelic"] += 1
+            else:
+                contigStats[variant.CHROM]["num_multiallelic"] += 1
+            
+            if any([ len(alt) > len(variant.REF) for alt in variant.ALT ]):
+                contigStats[variant.CHROM]["num_insertions"] += 1
+            if any([ len(alt) < len(variant.REF) for alt in variant.ALT ]):
+                contigStats[variant.CHROM]["num_deletions"] += 1
+            
+            if len(variant.REF) == 1:
+                contigStats[variant.CHROM]["num_snps"] += 1
+            else:
+                contigStats[variant.CHROM]["num_mnps"] += 1
+            
+            # Store sample-level stats
+            hasDP = False
+            if "DP" in variant.FORMAT:
+                hasDP = True
+                sampleDP = VCFTopia.sample_format_field(self.samples, variant, "DP")
+            hasAD = False
+            if "AD" in variant.FORMAT:
+                hasAD = True
+                sampleAD = VCFTopia.sample_format_field(self.samples, variant, "AD")
+            
+            sampleIntegers = VCFTopia.sample_integers(self.samples, variant)
+            for sample, integerList in sampleIntegers.items():
+                sampleStats.setdefault(sample, deepcopy(sampleDefault))
+                
+                if not -1 in integerList:
+                    sampleStats[sample]["num_called"] += 1
+                    if len(set(integerList)) == 1:
+                        sampleStats[sample]["num_hom"] += 1
+                    else:
+                        sampleStats[sample]["num_het"] += 1
+                    
+                    if hasDP:
+                        sampleStats[sample]["DP"].append(sum(sampleDP[sample])) # needs testing
+                    if hasAD:
+                        sampleStats[sample]["AD"].append(sum(sampleAD[sample]))
+                else:
+                    sampleStats[sample]["num_uncalled"] += 1
+        
+        # Average sample-level statistics arrays
+        for sample, statsDict in sampleStats.items():
+            statsDict["DP"] = np.array(statsDict["DP"])
+            statsDict["AD"] = np.array(statsDict["AD"])
+            
+            # Median and mean for DP
+            if len(statsDict["DP"]) != 0:
+                statsDict["DP_median"] = np.median(statsDict["DP"])
+                statsDict["DP_mean"] = np.mean(statsDict["DP"])
+            else:
+                statsDict["DP_median"] = None
+                statsDict["DP_mean"] = None
+            
+            # Median and mean for AD
+            if len(statsDict["AD"]) != 0:
+                statsDict["AD_median"] = np.median(statsDict["AD"])
+                statsDict["AD_mean"] = np.mean(statsDict["AD"])
+            else:
+                statsDict["AD_median"] = None
+                statsDict["AD_mean"] = None
+            
+            # Calculate DP-AD value (useful for ploidy change inference)
+            if len(statsDict["DP"]) != 0 and len(statsDict["AD"]) != 0:
+                statsDict["DP-AD"] = statsDict["DP"] - statsDict["AD"]
+                statsDict["DP-AD_mean"] = np.mean(statsDict["DP-AD"])
+                statsDict["DP-AD_median"] = np.median(statsDict["DP-AD"])
+                del statsDict["DP-AD"] # wipe so it doesn't contaminate the pd.Dataframe
+            else:
+                statsDict["DP-AD_mean"] = None
+                statsDict["DP-AD_median"] = None
+            
+            # Wipe AP and DP before later pandas dataframe conversion
+            del statsDict["DP"]
+            del statsDict["AD"]
+        
+        # Format pandas dataframes for statistics
+        genomeStatsDF = pd.DataFrame.from_dict(contigStats, orient="index")
+        sampleStatDF = pd.DataFrame.from_dict(sampleStats, orient="index")
+        
+        # Add totals row for genome statistics
+        genomeStatsDF.loc["Total"] = genomeStatsDF.sum()
+        
+        return genomeStatsDF, sampleStatDF
     
     def __iter__(self):
         """
         Iterate over all variants in the VCF file.
         """
-        yield from self.vcf
+        try:
+            yield from self.vcf
+            self.vcf = VCF(self.vcfFile) # allow iteration after successful completion
+        except Exception as e:
+            if str(e) == "attempt to iterate over closed/invalid VCF":
+                self.vcf = VCF(self.vcfFile) # prevent "attempt to iterate over closed/invalid VCF"
+                yield from self.vcf
+            else:
+                raise e
     
     def __repr__(self):
         return "<VCFTopia object;file='{0}';num_samples={1};num_contigs={2}>".format(
             self.vcfFile,
-            len(vcf.vcf.samples),
-            len(vcf.chroms)
+            len(self.vcf.samples),
+            len(self.chroms)
         )
 
 if __name__ == "__main__":

@@ -173,3 +173,17 @@ def validate_r_msa(args):
     # Validate numeric arguments
     if args.ploidy < 1:
         raise ValueError("--ploidy must be a positive integer greater than 0.")
+
+def validate_s(args):
+    '''
+    Validation for arguments common to all "stats" mode commands.
+    '''
+    # Validate VCF file
+    args.vcfFile = os.path.abspath(args.vcfFile)
+    if not os.path.isfile(args.vcfFile):
+        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")

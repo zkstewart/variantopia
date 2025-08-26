@@ -10,12 +10,12 @@ import os, argparse, sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_p, \
     validate_m, validate_m_plot, validate_m_report, \
-    validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa
+    validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa, \
+    validate_s
 from modules.msa import msa_to_plot, msa_to_variant_report, msa_to_sequence_report
-from modules.vcf import VCFTopia
-from modules.gff3 import GFF3Topia
-from modules.plot import GenesPlot, ChromosomesPlot
+from modules.plot import vcf_to_plot
 from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
+from modules.stats import stats_to_tsv
 from _version import __version__
 
 def main():
@@ -331,6 +331,12 @@ def main():
                                     add_help=False,
                                     help="Generate statistics for a VCF file")
     sparser.set_defaults(func=smain)
+    sparser.add_argument("-i", dest="vcfFile",
+                         required=True,
+                         help="Location of VCF file")
+    sparser.add_argument("-o", dest="outputFileName",
+                         required=True,
+                         help="Location to write statistics output")
     
     args = subParentParser.parse_args()
     
@@ -361,7 +367,6 @@ def main():
         rmain(args)
     elif args.mode == "stats":
         print("## variantopia.py - stats ##")
-        raise NotImplementedError("Stats mode is not yet implemented")
         validate_s(args)
         smain(args)
     
@@ -395,32 +400,7 @@ def mmain(args):
     print("MSA analysis complete!")
 
 def pmain(args):
-    # Load VCF and GFF3 files
-    vcf = VCFTopia(args.vcfFile)
-    if args.gff3File != None:
-        gff3 = GFF3Topia(args.gff3File)
-        gff3.create_ncls_index(["gene"])
-    else:
-        gff3 = None
-    
-    # Initialise plot object
-    if args.feature == "genes":
-        print("## gene statistic genegrams ##")
-        plot = GenesPlot(args.statistic, args.feature, args.windowSize,
-                         vcf, gff3, args.genomeFile,
-                         args.width, args.height
-        )
-    elif args.feature == "chromosomes":
-        print("## chromosome statistic ideograms ##")
-        plot = ChromosomesPlot(args.statistic, args.feature, args.windowSize,
-                               vcf, gff3, args.genomeFile,
-                               args.width, args.height
-        )
-    
-    # Generate plot
-    plot.colourMap = args.colourMap
-    plot.plot(args.outputFileName, idsToPlot=args.ids)
-    
+    vcf_to_plot(args)
     print("Plotting complete!")
 
 def rmain(args):
@@ -449,6 +429,7 @@ def rmain(args):
     print("Reformatting complete!")
 
 def smain(args):
+    stats_to_tsv(args)
     print("Statistics analysis complete!")
 
 if __name__ == "__main__":

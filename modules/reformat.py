@@ -148,7 +148,7 @@ def vcf_to_geno(args):
             
             # Format geno line for this variant
             geno = []
-            for genotype in VCFTopia.format_genotype_codes(variant):
+            for genotype in VCFTopia.genotype_codes(variant):
                 # Edit genotype to have a consistently predictable separator
                 "We don't care if the VCF is phased or not for this function"
                 if genotype == ".":
@@ -204,7 +204,7 @@ def vcf_to_table(args):
         # Write each variant
         for variant in vcf:
             alt = ",".join(variant.ALT)
-            sampleAlleles = VCFTopia.format_sample_alleles(vcf.samples, variant)
+            sampleAlleles = VCFTopia.sample_alleles(vcf.samples, variant)
             
             # Reorder sample alleles
             formattedAlleles = [ sampleAlleles[sample] for sample in sampleOrder ]
@@ -222,9 +222,9 @@ def vcf_to_msa(args):
     # Parse VCF into MSA list
     msaDict = {}
     for variant in vcf:
-        refAlt = VCFTopia.format_refAlt(variant)
+        refAlt = VCFTopia.refAlt(variant)
         alleleLength = max([ len(allele) for allele in refAlt ])
-        sampleAlleles = VCFTopia.format_sample_alleles(vcf.samples, variant)
+        sampleAlleles = VCFTopia.sample_alleles(vcf.samples, variant)
         
         # Skip if all alleles are missing
         if all("." in alleles for alleles in sampleAlleles.values()):

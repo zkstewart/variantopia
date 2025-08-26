@@ -640,3 +640,30 @@ class ChromosomesPlot(Plot):
         # Save output file
         plt.savefig(outputFileName)
         plt.close()
+
+def vcf_to_plot(args):
+    # Load VCF and GFF3 files
+    vcf = VCFTopia(args.vcfFile)
+    if args.gff3File != None:
+        gff3 = GFF3Topia(args.gff3File)
+        gff3.create_ncls_index(["gene"])
+    else:
+        gff3 = None
+    
+    # Initialise plot object
+    if args.feature == "genes":
+        print("## gene statistic genegrams ##")
+        plot = GenesPlot(args.statistic, args.feature, args.windowSize,
+                         vcf, gff3, args.genomeFile,
+                         args.width, args.height
+        )
+    elif args.feature == "chromosomes":
+        print("## chromosome statistic ideograms ##")
+        plot = ChromosomesPlot(args.statistic, args.feature, args.windowSize,
+                               vcf, gff3, args.genomeFile,
+                               args.width, args.height
+        )
+    
+    # Generate plot
+    plot.colourMap = args.colourMap
+    plot.plot(args.outputFileName, idsToPlot=args.ids)
