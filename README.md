@@ -4,9 +4,6 @@
   - [Obtaining variantopia](#obtaining-variantopia)
   - [Prerequisites](#prerequisites)
   - [Installation suggestions](#installation-suggestions)
-- [How to use variantopia](#how-to-use-variantopia)
-  - [Running an analysis](#running-an-analysis)
-  - [Rerunning an analysis](#rerunning-an-analysis)
 - [How to cite](#how-to-cite)
 
 # Getting started
