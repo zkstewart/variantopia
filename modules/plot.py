@@ -641,7 +641,7 @@ class ChromosomesPlot(Plot):
         plt.savefig(outputFileName)
         plt.close()
 
-def vcf_to_plot(args):
+def vcf_plot(args):
     # Load VCF and GFF3 files
     vcf = VCFTopia(args.vcfFile)
     if args.gff3File != None:

@@ -469,7 +469,7 @@ class GFF3Topia:
         if len(danglingFeatures) != 0:
             print(f"WARNING: Parsing '{self.fileLocation}' resulted in dangling features with no parents or children, " +
                   "which is likely due to an unsorted or incorrectly formatted GFF3 file. This may cause issues with " +
-                  "psQTL's functionality.")
+                  "variantopia's functionality.")
             for ftype, count in danglingFeatures.items():
                 print(f"# {count} '{ftype}' feature{'s have' if count > 1 else ' has'} no parents or children")
     

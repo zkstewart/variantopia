@@ -35,7 +35,7 @@ class VCFTopia:
         return alleleCounts
     
     @staticmethod
-    def count_homhet(variant):
+    def count_homhet(variant, countAbsence=False):
         '''
         Takes a cyvcf2.Variant object and returns a Counter object with
         two keys: "hom" and "het", where "hom" contains the count of samples with
@@ -44,6 +44,9 @@ class VCFTopia:
         
         Parameters:
             variant -- a cyvcf2.Variant object
+            countAbsence -- (OPTIONAL) a boolean controlling whether we should
+                            count missing data as being homozygous (True) or
+                            skip the datapoint (False); default is False
         Returns:
             homHet -- a collections.Counter object with structure like:
                       {
@@ -53,7 +56,8 @@ class VCFTopia:
         '''
         genotypeCategories = [
             "hom" if len(set(genotype[:-1])) == 1 else "het"
-            for genotype in variant.genotypes if not -1 in genotype[:-1]
+            for genotype in variant.genotypes
+            if countAbsence or (not -1 in genotype[:-1])
         ]
         homHet = Counter(genotypeCategories)
         homHet.setdefault("hom", 0)

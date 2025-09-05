@@ -1,6 +1,5 @@
 import os
 
-# Plot mode
 def parse_text_list(fileName):
     ids = []
     with open(fileName, "r") as fileIn:
@@ -8,6 +7,35 @@ def parse_text_list(fileName):
             ids.append(line.rstrip("\r\n\t "))
     return ids
 
+# copynum mode
+def validate_copynum(args):
+    '''
+    Validation for arguments common to all "copynum" mode commands.
+    '''
+    # Validate VCF file
+    args.vcfFile = os.path.abspath(args.vcfFile)
+    if not os.path.isfile(args.vcfFile):
+        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_copynum_plot(args):
+    '''
+    Validation for arguments used in "copynum plot" mode.
+    '''
+    # Validate numeric arguments
+    if args.windowSize < 0:
+        raise ValueError("--window must be >= 0")
+    
+    # Validate output file name
+    if not args.outputFileName.endswith(".html"):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must end in .html for 'copynum plot' mode")
+    
+
+# msa mode
 def validate_m(args):
     '''
     Validation for arguments common to all "msa" mode commands.
@@ -59,6 +87,7 @@ def validate_m_report(args):
     '''
     pass # no specific validation needed for 'msa report' mode
 
+# plot mode
 def validate_p(args):
     '''
     Validation for arguments common to all "plot" mode commands.
@@ -174,6 +203,7 @@ def validate_r_msa(args):
     if args.ploidy < 1:
         raise ValueError("--ploidy must be a positive integer greater than 0.")
 
+# stats mode
 def validate_s(args):
     '''
     Validation for arguments common to all "stats" mode commands.

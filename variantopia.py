@@ -11,9 +11,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_p, \
     validate_m, validate_m_plot, validate_m_report, \
     validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa, \
-    validate_s
+    validate_s, \
+    validate_copynum, validate_copynum_plot
+from modules.copynum import copynum_plot
 from modules.msa import msa_to_plot, msa_to_variant_report, msa_to_sequence_report
-from modules.plot import vcf_to_plot
+from modules.plot import vcf_plot
 from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
 from modules.stats import stats_to_tsv
 from _version import __version__
@@ -45,6 +47,34 @@ def main():
                                     add_help=False,
                                     help="Handle BayeScan data")
     bparser.set_defaults(func=bmain)
+    
+    # Copynum mode
+    cnparser = subparsers.add_parser("copynum",
+                                    parents=[p],
+                                    add_help=False,
+                                    help="Copy number analysis")
+    cnparser.set_defaults(func=cnmain)
+    
+    subCopynumParsers = cnparser.add_subparsers(dest="cnMode",
+                                                required=True)
+    
+    cnplotparser = subCopynumParsers.add_parser("plot",
+                                                parents=[p],
+                                                add_help=False,
+                                                help="Plot copy number inferences")
+    cnplotparser.add_argument("-i", dest="vcfFile",
+                              required=True,
+                              help="Location of VCF file to plot copy numbers for")
+    cnplotparser.add_argument("-o", dest="outputFileName",
+                              required=True,
+                              help="Location to write output file; must end in .html")
+    cnplotparser.add_argument("--window", dest="windowSize",
+                              required=False,
+                              type=int,
+                              help="""Optionally specify a window size within which to obtain
+                              a median copy number value to smooth the data; default==10000
+                              but set this to 0 or 1 to turn off window smoothing""",
+                              default=10000)
     
     # Filter mode
     fparser = subparsers.add_parser("filter",
@@ -345,6 +375,10 @@ def main():
         print("## variantopia.py - bayescan ##")
         raise NotImplementedError("Bayescan mode is not yet implemented")
         validate_b(args)
+    elif args.mode == "copynum":
+        print("## variantopia.py - copy numbers ##")
+        validate_copynum(args)
+        cnmain(args)
     elif args.mode == "filter":
         print("## variantopia.py - filter ##")
         raise NotImplementedError("Filter mode is not yet implemented")
@@ -376,6 +410,14 @@ def main():
 def bmain(args):
     print("BayeScan handling complete!")
 
+def cnmain(args):
+    if args.cnMode == "plot":
+        print("## Copy number plotting ##")
+        validate_copynum_plot(args)
+        copynum_plot(args)
+    
+    print("Copy number analysis complete!")
+
 def fmain(args):
     print("Filtering complete!")
 
@@ -400,7 +442,7 @@ def mmain(args):
     print("MSA analysis complete!")
 
 def pmain(args):
-    vcf_to_plot(args)
+    vcf_plot(args)
     print("Plotting complete!")
 
 def rmain(args):
