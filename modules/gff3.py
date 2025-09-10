@@ -1,11 +1,12 @@
 #! python3
 
-import re, os, math
+import os, sys, re, math
 from pandas import Series
 from ncls import NCLS
 from collections import Counter
 
-from .parsing import read_gz_file
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from parsing import read_gz_file
 
 class GFF3Feature:
     IMMUTABLE = ["ID", "ftype"] # these attributes should never change once set

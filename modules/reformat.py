@@ -1,7 +1,8 @@
-import os, gzip
+import os, sys, gzip
 from Bio import SeqIO
 
-from .vcf import VCFTopia
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from vcf import VCFTopia
 
 def vcf_to_cf(args):
     '''

@@ -1,12 +1,13 @@
-import os, math
+import os, sys, math
 import numpy as np
 import matplotlib.colors
 import matplotlib.pyplot as plt
 
 from Bio import SeqIO
 
-from .vcf import VCFTopia
-from .gff3 import GFF3Topia
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from vcf import VCFTopia
+from gff3 import GFF3Topia
 
 class Plot:
     STANDARD_DIMENSION = 5

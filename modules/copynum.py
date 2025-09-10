@@ -1,9 +1,10 @@
-import os
+import os, sys
 import numpy as np
 import plotly.graph_objects as go
 from typing import Union
 
-from .vcf import VCFTopia
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from vcf import VCFTopia
 
 def isOverlapping(start1, end1, start2, end2):
     """Does the range (start1, end1) overlap with (start2, end2)?"""

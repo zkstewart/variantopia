@@ -1,11 +1,12 @@
-import os
+import os, sys
 import pandas as pd
 import numpy as np
 import matplotlib.colors
 import matplotlib.pyplot as plt
 from Bio import SeqIO
 
-from .parsing import read_gz_file
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from parsing import read_gz_file
 
 class MSATopia:
     def __init__(self, msaFile):

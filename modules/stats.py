@@ -1,6 +1,7 @@
-import os
+import os, sys
 
-from .vcf import VCFTopia
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from vcf import VCFTopia
 
 def stats_to_tsv(args):
     '''
