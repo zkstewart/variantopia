@@ -33,14 +33,13 @@ def validate_copynum_plot(args):
     # Validate output file name
     if not args.outputFileName.endswith(".html"):
         raise ValueError(f"Output file (-o {args.outputFileName}) must end in .html for 'copynum plot' mode")
-    
 
 # msa mode
 def validate_m(args):
     '''
     Validation for arguments common to all "msa" mode commands.
     '''
-    # Validate MSA file
+    # Validate MSA file(s)
     msaFiles = []
     for location in args.msaFiles:
         location = os.path.abspath(location)
@@ -67,7 +66,7 @@ def validate_m(args):
 
 def validate_m_plot(args):
     '''
-    Validation for arguments used in "msa plot" mode.
+    Validation for arguments common to all "msa plot" mode commands.
     '''
     ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
     
@@ -81,23 +80,47 @@ def validate_m_plot(args):
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
+def validate_m_plot_stats(args):
+    '''
+    Validation for arguments used in "msa plot stats" mode.
+    '''
+    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
+    
+    # Validate metadataGroups file
+    if args.statistic == "uniqueness":
+        if args.metadataGroups == None:
+            raise ValueError(f"'-s uniqueness' requires that you specify a file to --metadata")
+        
+        args.metadataGroups = os.path.abspath(args.metadataGroups)
+        if not os.path.isfile(args.metadataGroups):
+            raise FileNotFoundError(f"Metadata file (--metadata {args.metadataGroups}) does not exist!")
+
 def validate_m_report(args):
     '''
     Validation for arguments used in "msa report" mode.
     '''
     pass # no specific validation needed for 'msa report' mode
 
-# plot mode
-def validate_p(args):
+# vcf mode
+def validate_v(args):
     '''
-    Validation for arguments common to all "plot" mode commands.
+    Validation for arguments common to all "vcf" mode commands.
     '''
-    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
-    
     # Validate VCF file
     args.vcfFile = os.path.abspath(args.vcfFile)
     if not os.path.isfile(args.vcfFile):
         raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_v_plot(args):
+    '''
+    Validation for arguments common to all "plot" mode commands.
+    '''
+    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
     
     # Validate optional genome and/or GFF3 files
     if args.feature == "genes" and args.gff3File == None:
@@ -134,30 +157,24 @@ def validate_p(args):
         raise ValueError("--height must be a positive integer greater than 0.")
     
     # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
-# Reformat mode
-def validate_r(args):
+def validate_v_stats(args):
     '''
-    Validation for arguments common to all "reformat" mode commands.
+    Validation for arguments used by "vcf stats" mode.
     '''
-    # Validate VCF file
-    args.vcfFile = os.path.abspath(args.vcfFile)
-    if not os.path.isfile(args.vcfFile):
-        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
-    
-    # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+    pass # no specific validation needed for 'vcf stats' mode
 
-def validate_r_cf(args):
+def validate_v_to(args):
     '''
-    Validation for arguments used in "reformat cf" mode.
+    Validation for arguments common to all "vcf to" mode commands.
+    '''
+    pass # no specific validation needed for 'vcf stats' mode
+
+def validate_v_to_cf(args):
+    '''
+    Validation for arguments used in "vcf to cf" mode.
     '''
     # Validate genome file (if relevant)
     if not args.onlySNPs:
@@ -168,9 +185,9 @@ def validate_r_cf(args):
         if not os.path.isfile(args.genomeFile):
             raise FileNotFoundError(f"Genome file (--genomeFile {args.genomeFile}) does not exist!")
 
-def validate_r_geno(args):
+def validate_v_to_geno(args):
     '''
-    Validation for arguments used in "reformat geno" mode.
+    Validation for arguments used in "vcf to geno" mode.
     '''
     # Validate uncalled character argument
     if len(args.uncalledCharacter) < 1:
@@ -182,38 +199,23 @@ def validate_r_geno(args):
     if os.path.exists(args.outputFileName):
         raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
-def validate_r_pos(args):
+def validate_v_to_pos(args):
     '''
-    Validation for arguments used in "reformat pos" mode.
+    Validation for arguments used in "vcf to pos" mode.
     '''
-    pass # no specific validation needed for pos mode
+    pass # no specific validation needed for 'vcf to pos' mode
 
-def validate_r_table(args):
+def validate_v_to_table(args):
     '''
-    Validation for arguments used in "reformat table" mode.
+    Validation for arguments used in "vcf to table" mode.
     '''
     if (args.sampleOrderFile != None) and (not os.path.isfile(args.sampleOrderFile)):
         raise FileNotFoundError(f"Unable to locate the sample order file (--sampleOrder {args.sampleOrderFile})")
 
-def validate_r_msa(args):
+def validate_v_to_msa(args):
     '''
-    Validation for arguments used in "reformat msa" mode.
+    Validation for arguments used in "vcf to msa" mode.
     '''
     # Validate numeric arguments
     if args.ploidy < 1:
         raise ValueError("--ploidy must be a positive integer greater than 0.")
-
-# stats mode
-def validate_s(args):
-    '''
-    Validation for arguments common to all "stats" mode commands.
-    '''
-    # Validate VCF file
-    args.vcfFile = os.path.abspath(args.vcfFile)
-    if not os.path.isfile(args.vcfFile):
-        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
-    
-    # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")

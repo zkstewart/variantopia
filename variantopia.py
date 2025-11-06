@@ -8,13 +8,12 @@
 import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from modules.validation import validate_p, \
-    validate_m, validate_m_plot, validate_m_report, \
-    validate_r, validate_r_cf, validate_r_geno, validate_r_pos, validate_r_table, validate_r_msa, \
-    validate_s, \
+from modules.validation import validate_m, validate_m_plot, validate_m_report, \
+    validate_v, validate_v_plot, validate_v_stats, validate_v_to, \
+    validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_copynum, validate_copynum_plot
 from modules.copynum import copynum_plot
-from modules.msa import msa_to_plot, msa_to_variant_report, msa_to_sequence_report
+from modules.msa import msa_plot_stats, msa_to_variant_report, msa_to_sequence_report
 from modules.plot import vcf_plot
 from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
 from modules.stats import stats_to_tsv
@@ -48,7 +47,7 @@ def main():
                                     help="Handle BayeScan data")
     bparser.set_defaults(func=bmain)
     
-    # Copynum mode
+    # Copynum subparser
     cnparser = subparsers.add_parser("copynum",
                                     parents=[p],
                                     add_help=False,
@@ -58,6 +57,7 @@ def main():
     subCopynumParsers = cnparser.add_subparsers(dest="cnMode",
                                                 required=True)
     
+    # Copynum > plot mode
     cnplotparser = subCopynumParsers.add_parser("plot",
                                                 parents=[p],
                                                 add_help=False,
@@ -76,21 +76,7 @@ def main():
                               but set this to 0 or 1 to turn off window smoothing""",
                               default=10000)
     
-    # Filter mode
-    fparser = subparsers.add_parser("filter",
-                                    parents=[p],
-                                    add_help=False,
-                                    help="Filter VCF data")
-    fparser.set_defaults(func=fmain)
-    
-    # Haplotype mode
-    hparser = subparsers.add_parser("haplotype",
-                                    parents=[p],
-                                    add_help=False,
-                                    help="Haplotype analysis")
-    hparser.set_defaults(func=hmain)
-    
-    # MSA mode
+    # MSA subparser
     mparser = subparsers.add_parser("msa",
                                     parents=[p],
                                     add_help=False,
@@ -100,309 +86,378 @@ def main():
     subMSAParsers = mparser.add_subparsers(dest="msaMode",
                                            required=True)
     
-    msaplotparser = subMSAParsers.add_parser("plot",
-                                             parents=[p],
-                                             add_help=False,
-                                             help="Plot MSA statistics")
-    msaplotparser.add_argument("-i", dest="msaFiles",
-                               required=True,
-                               nargs="+",
-                               help="""Specify the location(s) of MSA FASTA file(s) to plot
-                               and/or directories containing MSA files which end with
-                               any of the indicated --suffix values""")
-    msaplotparser.add_argument("-o", dest="outputFileName",
-                               required=True,
-                               help="Location to write output file")
-    msaplotparser.add_argument("-s", dest="statistic",
-                               required=True,
-                               choices=["gc", "mac", "maf", "gaprate"],
-                               help="Specify which statistic to plot")
-    msaplotparser.add_argument("--suffix", dest="suffixes",
-                               required=False,
-                               nargs="+",
-                               help="""Optionally, specify one or more suffixes
-                               to identify MSA files in any directories
-                               specified with -i; default is '.fa .fasta .fna .faa .fas'""",
-                               default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
-    msaplotparser.add_argument("--colour", dest="colourMap",
-                               required=False,
-                               choices=["viridis", "Greys", "GnBu", "RdBu"],
-                               help="""Optionally, specify the colour scheme to use for the plot;
-                               default is 'viridis'; refer to
-                               https://matplotlib.org/stable/users/explain/colors/colormaps.html
-                               for examples""",
-                               default="viridis")
-    msaplotparser.add_argument("--width", dest="width",
-                               type=int,
-                               required=False,
-                               help="""Optionally, specify the output plot width (default=10)""",
-                               default=10)
-    msaplotparser.add_argument("--height", dest="height",
-                               type=int,
-                               required=False,
-                               help="""Optionally, specify the output plot height (default=6)""",
-                               default=6)
+    # MSA > plot subparser
+    mplotparser = subMSAParsers.add_parser("plot",
+                                           parents=[p],
+                                           add_help=False,
+                                           help="Plot MSA file data")
+    mplotparser.set_defaults(func=mmain)
     
+    subMsaPlotParsers = mplotparser.add_subparsers(dest="msaPlotMode",
+                                                   required=True)
+    
+    # MSA > plot > stats mode
+    msaplotstatsparser = subMsaPlotParsers.add_parser("stats",
+                                                      parents=[p],
+                                                      add_help=False,
+                                                      help="Plot MSA statistics")
+    msaplotstatsparser.add_argument("-i", dest="msaFiles",
+                                    required=True,
+                                    nargs="+",
+                                    help="""Specify the location(s) of MSA FASTA file(s) to plot
+                                    and/or directories containing MSA files which end with
+                                    any of the indicated --suffix values""")
+    msaplotstatsparser.add_argument("-o", dest="outputFileName",
+                                    required=True,
+                                    help="Location to write output file")
+    msaplotstatsparser.add_argument("-s", dest="statistic",
+                                    required=True,
+                                    choices=["gc", "mac", "maf", "gaprate", "uniqueness"],
+                                    help="Specify which statistic to plot")
+    msaplotstatsparser.add_argument("--metadata", dest="metadataGroups",
+                                    required=False,
+                                    help="""If you are choosing to produce '-s uniqueness'
+                                    statistics, you must provide a headerless two-column tab-separated
+                                    file with a unique prefix (left) followed by its group number
+                                    (1 or 2; or 0 to exclude sample from calculation)""",
+                                    default=None)
+    msaplotstatsparser.add_argument("--suffix", dest="suffixes",
+                                    required=False,
+                                    nargs="+",
+                                    help="""Optionally, specify one or more suffixes
+                                    to identify MSA files in any directories
+                                    specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                                    default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
+    msaplotstatsparser.add_argument("--colour", dest="colourMap",
+                                    required=False,
+                                    choices=["viridis", "Greys", "GnBu", "RdBu"],
+                                    help="""Optionally, specify the colour scheme to use for the plot;
+                                    default is 'viridis'; refer to
+                                    https://matplotlib.org/stable/users/explain/colors/colormaps.html
+                                    for examples""",
+                                    default="viridis")
+    msaplotstatsparser.add_argument("--width", dest="width",
+                                    type=int,
+                                    required=False,
+                                    help="""Optionally, specify the output plot width (default=10)""",
+                                    default=10)
+    msaplotstatsparser.add_argument("--height", dest="height",
+                                    type=int,
+                                    required=False,
+                                    help="""Optionally, specify the output plot height (default=6)""",
+                                    default=6)
+    
+    # MSA > report subparser
     msareportparser = subMSAParsers.add_parser("report",
                                              parents=[p],
                                              add_help=False,
                                              help="Report MSA variants")
-    msareportparser.add_argument("-i", dest="msaFiles",
-                                 required=True,
-                                 nargs="+",
-                                 help="""Specify the location(s) of MSA FASTA file(s) to plot
-                                 and/or directories containing MSA files which end with
-                                 any of the indicated --suffix values""")
-    msareportparser.add_argument("-f", dest="reportFormat",
-                                 required=True,
-                                 choices=["per_variant", "per_sequence"],
-                                 help="Specify the format of the output report file(s)")
-    msareportparser.add_argument("-o", dest="outputFileName",
-                                 required=True,
-                                 help="Location to write output file")
-    msareportparser.add_argument("--suffix", dest="suffixes",
-                                 required=False,
-                                 nargs="+",
-                                 help="""Optionally, specify one or more suffixes
-                                 to identify MSA files in any directories
-                                 specified with -i; default is '.fa .fasta .fna .faa .fas'""",
-                                 default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
-    msareportparser.add_argument("--reportUntilStop", dest="reportUntilStop",
-                                 required=False,
-                                 action="store_true",
-                                 help="""Optionally provide this argument if you do not want to see variants
-                                 reported for a sequence after a stop codon is encountered in that sequence
-                                 (variants will be reported in other sequences if they don't encounter that
-                                 stop codon)""",
-                                 default=False)
     
-    # Plot mode
-    pparser = subparsers.add_parser("plot",
-                                    parents=[p],
-                                    add_help=False,
-                                    help="Plot VCF data")
-    pparser.set_defaults(func=pmain)
+    msareportparser.set_defaults(func=mmain)
     
-    pparser.add_argument("-i", dest="vcfFile",
-                         required=True,
-                         help="Location of VCF file to plot")
-    pparser.add_argument("-o", dest="outputFileName",
-                         required=True,
-                         help="""Location to write plot output; file extension
-                         must be one of .png, .pdf, or .svg""")
-    pparser.add_argument("-s", dest="statistic",
-                         required=True,
-                         choices=["snpnumber", "mac", "maf", "callrate", "het"],
-                         help="Specify which statistic to plot")
-    pparser.add_argument("-f", dest="feature",
-                         required=True,
-                         choices=["genes", "chromosomes"],
-                         help="""Specify which type of feature to plot""")
-    pparser.add_argument("-w", dest="windowSize",
-                         required=True,
-                         type=int,
-                         help="""Specify the window size for statistics summarisation;
-                         a size of 1 will plot the statistic for each nucleotide position
-                         individually, while larger sizes will summarise the statistic
-                         over that many basepairs in length.""")
-    pparser.add_argument("--ids", dest="idsToPlot",
-                         required=False,
-                         nargs="+",
-                         help="""Optionally, specify the IDs of genes or chromosomes
-                         to limit plotting to; alternatively, you may specify file
-                         name(s) which list these IDs, one per line.""",
-                         default=None)
-    pparser.add_argument("--genome", dest="genomeFile",
-                         required=False,
-                         help="Specify genome file if '-f chromosomes' is used",
-                         default=None)
-    pparser.add_argument("--gff3", dest="gff3File",
-                         required=False,
-                         help="""Specify GFF3 file if '-f genes' is used, or if
-                         you want gene locations to be annotated on a
-                         '-f chromosomes' plot""",
-                         default=None)
-    pparser.add_argument("--colour", dest="colourMap",
-                         required=False,
-                         choices=["viridis", "Greys", "GnBu", "RdBu"],
-                         help="""Optionally, specify the colour scheme to use for the plot;
-                         default is 'viridis'; refer to
-                         https://matplotlib.org/stable/users/explain/colors/colormaps.html
-                         for examples""",
-                         default="viridis")
-    pparser.add_argument("--width", dest="width",
-                         type=int,
-                         required=False,
-                         help="""Optionally, specify the output plot width (default=10)""",
-                         default=10)
-    pparser.add_argument("--height", dest="height",
-                         type=int,
-                         required=False,
-                         help="""Optionally, specify the output plot height (default=6)""",
-                         default=6)
+    subMsaReportParsers = msareportparser.add_subparsers(dest="msaReportMode",
+                                                         required=True)
     
-    # Reformat mode
-    rparser = subparsers.add_parser("reformat",
-                                    parents=[p],
-                                    add_help=False,
-                                    help="Reformat VCF data")
-    rparser.set_defaults(func=rmain)
-    
-    subReformatParsers = rparser.add_subparsers(dest="reformatMode",
-                                                required=True)
-    
-    cfparser = subReformatParsers.add_parser("cf",
-                                             parents=[p],
-                                             add_help=False,
-                                             help="Convert to CF format e.g., for IQ-TREE2")
-    cfparser.add_argument("-i", dest="vcfFile",
+    # MSA > report > per_variant mode
+    msareppv = subMsaReportParsers.add_parser("per_variant",
+                                              parents=[p],
+                                              add_help=False,
+                                              help="Per-variant MSA report")
+    msareppv.add_argument("-i", dest="msaFiles",
                           required=True,
-                          help="Location of VCF file to reformat")
-    cfparser.add_argument("-o", dest="outputFileName",
+                          nargs="+",
+                          help="""Specify the location(s) of MSA FASTA file(s) to plot
+                          and/or directories containing MSA files which end with
+                          any of the indicated --suffix values""")
+    msareppv.add_argument("-o", dest="outputFileName",
                           required=True,
-                          help="Location to write reformatted file")
-    cfparser.add_argument("--genomeFile", dest="genomeFile",
+                          help="Location to write output file")
+    msareppv.add_argument("--suffix", dest="suffixes",
                           required=False,
-                          help="Specify genome file unless --snps is used",
-                          default=None)
-    cfparser.add_argument("--snps", dest="onlySNPs",
+                          nargs="+",
+                          help="""Optionally, specify one or more suffixes
+                          to identify MSA files in any directories
+                          specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                          default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
+    msareppv.add_argument("--reportUntilStop", dest="reportUntilStop",
                           required=False,
                           action="store_true",
-                          help="Optionally, produce a .cf with only SNPs present",
+                          help="""Optionally provide this argument if you do not want to see variants
+                          reported for a sequence after a stop codon is encountered in that sequence
+                          (variants will be reported in other sequences if they don't encounter that
+                          stop codon)""",
                           default=False)
     
-    genoparser = subReformatParsers.add_parser("geno",
-                                               parents=[p],
-                                               add_help=False,
-                                               help="Convert to geno format e.g., for ngsLD")
-    genoparser.add_argument("-i", dest="vcfFile",
+    # MSA > report > per_sequence mode
+    msarepps = subMsaReportParsers.add_parser("per_sequence",
+                                              parents=[p],
+                                              add_help=False,
+                                              help="Per-sequence MSA report")
+    msarepps.add_argument("-i", dest="msaFiles",
+                          required=True,
+                          nargs="+",
+                          help="""Specify the location(s) of MSA FASTA file(s) to plot
+                          and/or directories containing MSA files which end with
+                          any of the indicated --suffix values""")
+    msarepps.add_argument("-o", dest="outputFileName",
+                          required=True,
+                          help="Location to write output file")
+    msarepps.add_argument("--suffix", dest="suffixes",
+                          required=False,
+                          nargs="+",
+                          help="""Optionally, specify one or more suffixes
+                          to identify MSA files in any directories
+                          specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                          default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
+    msarepps.add_argument("--reportUntilStop", dest="reportUntilStop",
+                          required=False,
+                          action="store_true",
+                          help="""Optionally provide this argument if you do not want to see variants
+                          reported for a sequence after a stop codon is encountered in that sequence
+                          (variants will be reported in other sequences if they don't encounter that
+                          stop codon)""",
+                          default=False)
+    
+    # VCF subparser
+    vparser = subparsers.add_parser("vcf",
+                                    parents=[p],
+                                    add_help=False,
+                                    help="VCF handling")
+    vparser.set_defaults(func=vmain)
+    
+    subVcfParsers = vparser.add_subparsers(dest="vcfMode",
+                                           required=True)
+    
+    # VCF > plot mode
+    vplotparser = subVcfParsers.add_parser("plot",
+                                           parents=[p],
+                                           add_help=False,
+                                           help="Plot VCF data")
+    vplotparser.set_defaults(func=vmain)
+    
+    vplotparser.add_argument("-i", dest="vcfFile",
+                             required=True,
+                             help="Location of VCF file to plot")
+    vplotparser.add_argument("-o", dest="outputFileName",
+                             required=True,
+                             help="""Location to write plot output; file extension
+                             must be one of .png, .pdf, or .svg""")
+    vplotparser.add_argument("-s", dest="statistic",
+                             required=True,
+                             choices=["snpnumber", "mac", "maf", "callrate", "het"],
+                             help="Specify which statistic to plot")
+    vplotparser.add_argument("-f", dest="feature",
+                             required=True,
+                             choices=["genes", "chromosomes"],
+                             help="""Specify which type of feature to plot""")
+    vplotparser.add_argument("-w", dest="windowSize",
+                             required=True,
+                             type=int,
+                             help="""Specify the window size for statistics summarisation;
+                             a size of 1 will plot the statistic for each nucleotide position
+                             individually, while larger sizes will summarise the statistic
+                             over that many basepairs in length.""")
+    vplotparser.add_argument("--ids", dest="idsToPlot",
+                             required=False,
+                             nargs="+",
+                             help="""Optionally, specify the IDs of genes or chromosomes
+                             to limit plotting to; alternatively, you may specify file
+                             name(s) which list these IDs, one per line.""",
+                             default=None)
+    vplotparser.add_argument("--genome", dest="genomeFile",
+                             required=False,
+                             help="Specify genome file if '-f chromosomes' is used",
+                             default=None)
+    vplotparser.add_argument("--gff3", dest="gff3File",
+                             required=False,
+                             help="""Specify GFF3 file if '-f genes' is used, or if
+                             you want gene locations to be annotated on a
+                             '-f chromosomes' plot""",
+                             default=None)
+    vplotparser.add_argument("--colour", dest="colourMap",
+                             required=False,
+                             choices=["viridis", "Greys", "GnBu", "RdBu"],
+                             help="""Optionally, specify the colour scheme to use for the plot;
+                             default is 'viridis'; refer to
+                             https://matplotlib.org/stable/users/explain/colors/colormaps.html
+                             for examples""",
+                             default="viridis")
+    vplotparser.add_argument("--width", dest="width",
+                             type=int,
+                             required=False,
+                             help="""Optionally, specify the output plot width (default=10)""",
+                             default=10)
+    vplotparser.add_argument("--height", dest="height",
+                             type=int,
+                             required=False,
+                             help="""Optionally, specify the output plot height (default=6)""",
+                             default=6)
+    
+    # VCF > stats mode
+    vstatsparser = subVcfParsers.add_parser("stats",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Generate statistics for a VCF file")
+    vstatsparser.set_defaults(func=vmain)
+    vstatsparser.add_argument("-i", dest="vcfFile",
+                              required=True,
+                              help="Location of VCF file")
+    vstatsparser.add_argument("-o", dest="outputFileName",
+                              required=True,
+                              help="Location to write statistics output")
+    
+    # VCF > filter mode
+    vfilterparser = subVcfParsers.add_parser("filter",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Filter VCF data")
+    vfilterparser.set_defaults(func=vmain)
+    
+    # VCF > haplotype mode
+    vhapparser = subVcfParsers.add_parser("haplotype",
+                                          parents=[p],
+                                          add_help=False,
+                                          help="Haplotype analysis")
+    vhapparser.set_defaults(func=vmain)
+    
+    # VCF > to subparser
+    vtoparser = subVcfParsers.add_parser("to",
+                                         parents=[p],
+                                         add_help=False,
+                                         help="Reformat VCF data")
+    vtoparser.set_defaults(func=vmain)
+    
+    subVcfToParsers = vtoparser.add_subparsers(dest="vcfToMode",
+                                               required=True)
+    
+    # VCF > to > cf mode
+    vtocparser = subVcfToParsers.add_parser("cf",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to CF format e.g., for IQ-TREE2")
+    vtocparser.add_argument("-i", dest="vcfFile",
                             required=True,
                             help="Location of VCF file to reformat")
-    genoparser.add_argument("-o", dest="outputFileName",
+    vtocparser.add_argument("-o", dest="outputFileName",
                             required=True,
                             help="Location to write reformatted file")
-    genoparser.add_argument("--uncalled", dest="uncalledCharacter",
+    vtocparser.add_argument("--genomeFile", dest="genomeFile",
+                            required=False,
+                            help="Specify genome file unless --snps is used",
+                            default=None)
+    vtocparser.add_argument("--snps", dest="onlySNPs",
+                            required=False,
+                            action="store_true",
+                            help="Optionally, produce a .cf with only SNPs present",
+                            default=False)
+    
+    # VCF > to > geno mode
+    vtogparser = subVcfToParsers.add_parser("geno",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to geno format e.g., for ngsLD")
+    vtogparser.add_argument("-i", dest="vcfFile",
+                            required=True,
+                            help="Location of VCF file to reformat")
+    vtogparser.add_argument("-o", dest="outputFileName",
+                            required=True,
+                            help="Location to write reformatted file")
+    vtogparser.add_argument("--uncalled", dest="uncalledCharacter",
                             required=False,
                             help="""Optionally, set the character to use for uncalled
                             genotypes. Default is -1.""",
                             default="-1")
-    genoparser.add_argument("--keepM", dest="keepMultiallelic",
+    vtogparser.add_argument("--keepM", dest="keepMultiallelic",
                             required=False,
                             action="store_true",
                             help="Optionally, keep multiallelic sites in the output file",
                             default=False)
-    genoparser.add_argument("--keepI", dest="keepIndels",
+    vtogparser.add_argument("--keepI", dest="keepIndels",
                             required=False,
                             action="store_true",
                             help="Optionally, keep indels in the output file",
                             default=False)
     
-    posparser = subReformatParsers.add_parser("pos",
+    # VCF > to > pos mode
+    vtopparser = subVcfToParsers.add_parser("pos",
                                               parents=[p],
                                               add_help=False,
                                               help="Convert to pos format e.g., for tree ngsLD")
-    posparser.add_argument("-i", dest="vcfFile",
+    vtopparser.add_argument("-i", dest="vcfFile",
                            required=True,
                            help="Location of VCF file to reformat")
-    posparser.add_argument("-o", dest="outputFileName",
+    vtopparser.add_argument("-o", dest="outputFileName",
                            required=True,
                            help="Location to write reformatted file")
-    posparser.add_argument("--header", dest="header",
+    vtopparser.add_argument("--header", dest="header",
                            required=False,
                            action="store_true",
                            help="Optionally, add a header to the output file",
                            default=False)
-    posparser.add_argument("--keepM", dest="keepMultiallelic",
+    vtopparser.add_argument("--keepM", dest="keepMultiallelic",
                            required=False,
                            action="store_true",
                            help="Optionally, keep multiallelic sites in the output file",
                            default=False)
-    posparser.add_argument("--keepI", dest="keepIndels",
+    vtopparser.add_argument("--keepI", dest="keepIndels",
                            required=False,
                            action="store_true",
                            help="Optionally, keep indels in the output file",
                            default=False)
     
-    tableparser = subReformatParsers.add_parser("table",
-                                                parents=[p],
-                                                add_help=False,
-                                                help="Convert to table format e.g., for manual inspection")
-    tableparser.add_argument("-i", dest="vcfFile",
-                             required=True,
-                             help="Location of VCF file to reformat")
-    tableparser.add_argument("-o", dest="outputFileName",
-                              required=True,
-                              help="Location to write reformatted file")
-    tableparser.add_argument("--sampleOrder", dest="sampleOrderFile",
-                             required=False,
-                             help="""Optionally, specify a text file listing the order of samples
-                             (as columns) in the output table; default is to use the VCF header order""",
-                             default=None)
+    # VCF > to > table mode
+    vtotparser = subVcfToParsers.add_parser("table",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to table format e.g., for manual inspection")
+    vtotparser.add_argument("-i", dest="vcfFile",
+                            required=True,
+                            help="Location of VCF file to reformat")
+    vtotparser.add_argument("-o", dest="outputFileName",
+                            required=True,
+                            help="Location to write reformatted file")
+    vtotparser.add_argument("--sampleOrder", dest="sampleOrderFile",
+                            required=False,
+                            help="""Optionally, specify a text file listing the order of samples
+                            (as columns) in the output table; default is to use the VCF header order""",
+                            default=None)
     
-    vcfmsaparser = subReformatParsers.add_parser("msa",
-                                                 parents=[p],
-                                                 add_help=False,
-                                                 help="Convert to MSA format of just variants e.g., for tree building")
-    vcfmsaparser.add_argument("-i", dest="vcfFile",
-                              required=True,
-                              help="Location of VCF file to reformat")
-    vcfmsaparser.add_argument("-o", dest="outputFileName",
-                              required=True,
-                              help="Location to write reformatted file")
-    vcfmsaparser.add_argument("--ploidy", dest="ploidy",
-                              required=False,
-                              type=int,
-                              help="Optionally, indicate the ploidy of the samples (default: 2)",
-                              default=2)
-    
-    # Stats mode
-    sparser = subparsers.add_parser("stats",
-                                    parents=[p],
-                                    add_help=False,
-                                    help="Generate statistics for a VCF file")
-    sparser.set_defaults(func=smain)
-    sparser.add_argument("-i", dest="vcfFile",
-                         required=True,
-                         help="Location of VCF file")
-    sparser.add_argument("-o", dest="outputFileName",
-                         required=True,
-                         help="Location to write statistics output")
+    # VCF > to > msa mode
+    vtomparser = subVcfToParsers.add_parser("msa",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to MSA format of just variants e.g., for tree building")
+    vtomparser.add_argument("-i", dest="vcfFile",
+                            required=True,
+                            help="Location of VCF file to reformat")
+    vtomparser.add_argument("-o", dest="outputFileName",
+                            required=True,
+                            help="Location to write reformatted file")
+    vtomparser.add_argument("--ploidy", dest="ploidy",
+                            required=False,
+                            type=int,
+                            help="Optionally, indicate the ploidy of the samples (default: 2)",
+                            default=2)
     
     args = subParentParser.parse_args()
     
     # Split into mode-specific functions
     if args.mode == "bayescan":
-        print("## variantopia.py - bayescan ##")
+        print("## variantopia.py - BayeScan results handling ##")
         raise NotImplementedError("Bayescan mode is not yet implemented")
         validate_b(args)
     elif args.mode == "copynum":
         print("## variantopia.py - copy numbers ##")
         validate_copynum(args)
         cnmain(args)
-    elif args.mode == "filter":
-        print("## variantopia.py - filter ##")
-        raise NotImplementedError("Filter mode is not yet implemented")
-        validate_f(args)
-    elif args.mode == "haplotype":
-        print("## variantopia.py - haplotype ##")
-        raise NotImplementedError("Haplotype mode is not yet implemented")
-        validate_h(args)
     elif args.mode == "msa":
-        print("## variantopia.py - msa ##")
+        print("## variantopia.py - MSA file handling ##")
         validate_m(args)
         mmain(args)
-    elif args.mode == "plot":
-        print("## variantopia.py - plot ##")
-        validate_p(args) # sets args.ids
-        pmain(args)
-    elif args.mode == "reformat":
-        print("## variantopia.py - reformat ##")
-        validate_r(args)
+    elif args.mode == "vcf":
+        print("## variantopia.py - VCF file handling ##")
+        validate_v(args)
         rmain(args)
-    elif args.mode == "stats":
-        print("## variantopia.py - stats ##")
-        validate_s(args)
-        smain(args)
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
@@ -418,61 +473,68 @@ def cnmain(args):
     
     print("Copy number analysis complete!")
 
-def fmain(args):
-    print("Filtering complete!")
-
-def hmain(args):
-    print("Haplotype analysis complete!")
-
 def mmain(args):
     # Split into sub-mode-specific functions
     if args.msaMode == "plot":
-        print("## MSA plotting ##")
         validate_m_plot(args)
-        msa_to_plot(args)
+        if args.msaPlotMode == "stats":
+            print("## Plot MSA statistics ##")
+            msa_plot_stats(args)
+        if args.msaPlotMode == "alignment":
+            print("## Plot MSA alignment ##")
+            msa_plot_alignment(args)
+    
     elif args.msaMode == "report":
         validate_m_report(args)
-        if args.reportFormat == "per_variant":
-            print("## per-variant report ##")
+        if args.msaReportMode == "per_variant":
+            print("## Per-variant MSA variant report ##")
             msa_to_variant_report(args)
-        elif args.reportFormat == "per_sequence":
-            print("## per-sequence report ##")
+        elif args.msaReportMode == "per_sequence":
+            print("## Per-sequence MSA variant report ##")
             msa_to_sequence_report(args)
     
     print("MSA analysis complete!")
 
-def pmain(args):
-    vcf_plot(args)
-    print("Plotting complete!")
-
-def rmain(args):
+def vmain(args):
     # Split into sub-mode-specific functions
-    if args.reformatMode == "cf":
-        print("## VCF -> CF ##")
-        validate_r_cf(args)
-        vcf_to_cf(args)
-    elif args.reformatMode == "geno":
-        print("## VCF -> Geno ##")
-        validate_r_geno(args)
-        vcf_to_geno(args)
-    elif args.reformatMode == "pos":
-        print("## VCF -> Pos ##")
-        validate_r_pos(args)
-        vcf_to_pos(args)
-    elif args.reformatMode == "table":
-        print("## VCF -> Table ##")
-        validate_r_table(args)
-        vcf_to_table(args)
-    elif args.reformatMode == "msa":
-        print("## VCF -> MSA ##")
-        validate_r_msa(args)
-        vcf_to_msa(args)
+    if args.vcfMode == "plot":
+        print("## Plot VCF variant information ##")
+        validate_v_plot(args)
+        vcf_plot(args)
+    if args.vcfMode == "stats":
+        print("## Generate VCF file statistics ##")
+        validate_v_stats(args)
+        stats_to_tsv(args)
+    if args.vcfMode == "filter":
+        print("## Filter VCF file ##")
+        raise NotImplementedError("'vcf filter' mode not yet implemented")
+    if args.vcfMode == "haplotype":
+        print("## VCF haplotype analysis ##")
+        raise NotImplementedError("'vcf haplotype' mode not yet implemented")
+    if args.vcfMode == "to":
+        validate_v_to(args)
+        if args.vcfToMode == "cf":
+            print("## VCF to CF conversion ##")
+            validate_v_to_cf(args)
+            vcf_to_cf(args)
+        elif args.vcfToMode == "geno":
+            print("## VCF to Geno conversion ##")
+            validate_v_to_geno(args)
+            vcf_to_geno(args)
+        elif args.vcfToMode == "pos":
+            print("## VCF to Pos conversion ##")
+            validate_v_to_pos(args)
+            vcf_to_pos(args)
+        elif args.vcfToMode == "table":
+            print("## VCF to Table conversion ##")
+            validate_v_to_table(args)
+            vcf_to_table(args)
+        elif args.vcfToMode == "msa":
+            print("## VCF to MSA conversion ##")
+            validate_v_to_msa(args)
+            vcf_to_msa(args)
     
-    print("Reformatting complete!")
-
-def smain(args):
-    stats_to_tsv(args)
-    print("Statistics analysis complete!")
+    print("VCF handling complete!")
 
 if __name__ == "__main__":
     main()

@@ -131,6 +131,53 @@ class MSATopia:
         numGaps = residueCounts.get("-", 0)
         return numGaps / len(column)
     
+    @staticmethod
+    def calculate_uniqueness(column, groups):
+        '''
+        Calculate the uniqueness (i.e., the difference in how many times a variant
+        occurs in two different groups) of a pandas Series column.
+        
+        Parameters:
+            column -- a pd.Series object representing a column of an MSA DataFrame
+            groups -- an iterable with equal length and ordering to the column containing
+                      values of 1 or 2, indicating whether the sequence column belongs to
+                      group 1 or 2. Use 0 or None to ignore a sample from the calculation.
+        Returns:
+            uniqueness -- the absolute difference in variant occurrence as a ratio from
+                          0 (no difference in variant occurrence between groups) to 1
+                          (variant exclusively occurs in one group and not the other)
+        '''
+        if groups == None:
+            raise ValueError("calculate_uniqueness requires the 'groups' metadata variable")
+        
+        if len(column) != len(groups):
+            raise ValueError("MSA column and metadata groups must have equal len")
+        
+        consensus, alts = MSATopia.consensus_and_alt_residues(column)
+        
+        group1, group2 = 0, 0
+        for residue, group in zip(column, groups):
+            if residue != consensus:
+                if group == 1:
+                    group1 += 1
+                elif group == 2:
+                    group2 += 1
+                elif group == 0 or group == None:
+                    pass
+                else:
+                    raise ValueError(f"group value must be in [0,1,2,None], not '{group}'")
+        
+        try:
+            group1Ratio = group1 / sum([ 1 for x in groups if x == 1 ])
+        except ZeroDivisionError:
+            group1Ratio = 0.0
+        try:
+            group2Ratio = group2 / sum([ 1 for x in groups if x == 2 ])
+        except ZeroDivisionError:
+            group2Ratio = 0.0
+        
+        return abs(group1Ratio - group2Ratio)
+    
     @property
     def msaFile(self):
         return self._msaFile
@@ -197,7 +244,7 @@ class MSATopia:
             self.ncol
         )
 
-class MSAPlot:
+class MSAStatsPlot:
     STANDARD_DIMENSION = 5
     
     def __init__(self, msaFiles, statistic,
@@ -206,11 +253,11 @@ class MSAPlot:
         Parameters:
             msaFiles -- a list of strings indicating the MSA files to plot
             statistic -- a string indicating the statistic to plot; currently supported
-                         values are "gc", "mac", "maf", "gaprate"
+                         values are "gc", "mac", "maf", "gaprate", "uniqueness"
             width -- an integer indicating the width of the plot in inches; if None,
-                     defaults to MSAPlot.STANDARD_DIMENSION * number of regions
+                     defaults to MSAStatsPlot.STANDARD_DIMENSION * number of regions
             height -- an integer indicating the height of the plot in inches; if None,
-                      defaults to MSAPlot.STANDARD_DIMENSION * number of rows
+                      defaults to MSAStatsPlot.STANDARD_DIMENSION * number of rows
         '''
         # Behaviour parameters
         self.statistic = statistic
@@ -247,7 +294,7 @@ class MSAPlot:
     
     @statistic.setter
     def statistic(self, value):
-        ACCEPTED_STATISTICS = ["gc", "mac", "maf", "gaprate"]
+        ACCEPTED_STATISTICS = ["gc", "mac", "maf", "gaprate", "uniqueness"]
         if value in ACCEPTED_STATISTICS:
             self._statistic = value
         else:
@@ -263,6 +310,8 @@ class MSAPlot:
             return MSATopia.calculate_maf
         elif self.statistic == "gaprate":
             return MSATopia.calculate_gaprate
+        elif self.statistic == "uniqueness":
+            return MSATopia.calculate_uniqueness
         else:
             raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .statFunction")
     
@@ -294,13 +343,15 @@ class MSAPlot:
             return np.float64
         elif self.statistic == "gaprate":
             return np.float64
+        elif self.statistic == "uniqueness":
+            return np.float64
         else:
             raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .dtype")
     
     @property
     def width(self):
         if self._width is None:
-            return MSAPlot.STANDARD_DIMENSION
+            return MSAStatsPlot.STANDARD_DIMENSION
         return self._width
     
     @width.setter
@@ -319,7 +370,7 @@ class MSAPlot:
     @property
     def height(self):
         if self._height is None:
-            return MSAPlot.STANDARD_DIMENSION
+            return MSAStatsPlot.STANDARD_DIMENSION
         return self._height
     
     @height.setter
@@ -335,7 +386,7 @@ class MSAPlot:
 
             self._height = value
     
-    def get_x_y(self, msaFile):
+    def get_x_y(self, msaFile, groupDict=None):
         '''
         Returns the x list and y array needed for broken_barh plotting of MSA
         statistics. Method of operation is dictated by self.statistic.
@@ -356,7 +407,10 @@ class MSAPlot:
         # Lay out the y values in a numpy array
         y = []
         for i, column in enumerate(msa.columns):
-            y.append(self.statFunction(column))
+            if self.statistic == "uniqueness":
+                y.append(self.statFunction(column, groupDict))
+            else:
+                y.append(self.statFunction(column))
         y = np.array(y, dtype=self.dtype)
         
         # Create the x array
@@ -364,7 +418,7 @@ class MSAPlot:
         
         return x, y
     
-    def plot(self, outputFileName):
+    def plot(self, outputFileName, groupDict=None):
         '''
         Plots the specified .statistic for the MSA.
         
@@ -372,6 +426,10 @@ class MSAPlot:
             outputFileName -- a string indicating the location to write plot output to;
                               assumes file name is pre-validated to ensure no overwriting
                               and to have a valid filename suffix to control the file format
+            groupDict -- (OPTIONAL) if self.statistic == "uniqueness" you must specify
+                         a dictionary where sequence prefixes are keys and values are
+                         1 (group1), 2 (group2), 0 or None (ignore). All sequences must
+                         match a single unique prefix.
         '''
         SPACING = 0.1
         
@@ -380,7 +438,7 @@ class MSAPlot:
         msaArrays = []
         for msaFile in self.msaFiles:
             msaLabels.append(os.path.basename(msaFile).rsplit(".", maxsplit=1)[0])
-            msaArrays.append(self.get_x_y(msaFile))
+            msaArrays.append(self.get_x_y(msaFile, groupDict))
         
         # Sort data from longest to shortest
         msaArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
@@ -427,15 +485,16 @@ class MSAPlot:
                            "Minor Allele Count" if self.statistic == "mac" else \
                            "Minor Allele Frequency" if self.statistic == "maf" else \
                            "Gap Rate" if self.statistic == "gaprate" else \
+                           "Uniqueness" if self.statistic == "uniqueness" else \
                            "labeltypenothandled")
         
         # Save output file
         plt.savefig(outputFileName)
         plt.close()
 
-def msa_to_plot(args):
-    plot = MSAPlot(args.msaFiles, statistic=args.statistic,
-                   width=args.width, height=args.height
+def msa_plot_stats(args):
+    plot = MSAStatsPlot(args.msaFiles, statistic=args.statistic,
+                        width=args.width, height=args.height
     )
     plot.colourMap = args.colourMap
     plot.plot(args.outputFileName)
