@@ -1,38 +1,14 @@
-import os
+import os, sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from parsing import read_gz_file
 
 def parse_text_list(fileName):
     ids = []
-    with open(fileName, "r") as fileIn:
+    with read_gz_file(fileName) as fileIn:
         for line in fileIn:
             ids.append(line.rstrip("\r\n\t "))
     return ids
-
-# copynum mode
-def validate_copynum(args):
-    '''
-    Validation for arguments common to all "copynum" mode commands.
-    '''
-    # Validate VCF file
-    args.vcfFile = os.path.abspath(args.vcfFile)
-    if not os.path.isfile(args.vcfFile):
-        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
-    
-    # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
-
-def validate_copynum_plot(args):
-    '''
-    Validation for arguments used in "copynum plot" mode.
-    '''
-    # Validate numeric arguments
-    if args.windowSize < 0:
-        raise ValueError("--window must be >= 0")
-    
-    # Validate output file name
-    if not args.outputFileName.endswith(".html"):
-        raise ValueError(f"Output file (-o {args.outputFileName}) must end in .html for 'copynum plot' mode")
 
 # msa mode
 def validate_m(args):
@@ -116,9 +92,27 @@ def validate_v(args):
     if os.path.exists(args.outputFileName):
         raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
+def validate_v_cn(args):
+    '''
+    Validation for arguments common to all "vcf copynum" mode commands.
+    '''
+    pass # no specific validation needed for 'vcf copynum' mode
+
+def validate_v_cn_plot(args):
+    '''
+    Validation for arguments used in "copynum plot" mode.
+    '''
+    # Validate numeric arguments
+    if args.windowSize < 0:
+        raise ValueError("--window must be >= 0")
+    
+    # Validate output file name
+    if not args.outputFileName.endswith(".html"):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must end in .html for 'copynum plot' mode")
+
 def validate_v_plot(args):
     '''
-    Validation for arguments common to all "plot" mode commands.
+    Validation for arguments common used in "vcf plot" mode.
     '''
     ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
     

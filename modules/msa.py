@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from parsing import read_gz_file
+from parsing import read_gz_file, WriteGzFile
 
 class MSATopia:
     def __init__(self, msaFile):
@@ -500,7 +500,7 @@ def msa_plot_stats(args):
     plot.plot(args.outputFileName)
 
 def msa_to_variant_report(args):
-    with open(args.outputFileName, "w") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         fileOut.write("#gene\tposition_number\tconsensus_residue\tvariant_residue\tseqs_with_variant\n")
         
         for msaFile in args.msaFiles:
@@ -530,7 +530,7 @@ def msa_to_variant_report(args):
                         foundStop.update(hasVariant)
 
 def msa_to_sequence_report(args):
-    with open(args.outputFileName, "w") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         fileOut.write("#gene\tsequence_id\tvariants\n")
         
         for msaFile in args.msaFiles:

@@ -3,6 +3,7 @@ from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vcf import VCFTopia
+from parsing import WriteGzFile
 
 def vcf_to_cf(args):
     '''
@@ -13,7 +14,7 @@ def vcf_to_cf(args):
         nsites = sum([ 1 for chrom in genotypeDict for pos in genotypeDict[chrom] ])
         
         # Write output
-        with open(args.outputFileName, "w") as fileOut:
+        with WriteGzFile(args.outputFileName) as fileOut:
             # Write header
             fileOut.write("COUNTSFILE NPOP {0} NSITES {1}\n".format(len(vcf.samples), nsites))
             fileOut.write("CHROM POS {0}\n".format(" ".join(vcf.samples)))
@@ -60,7 +61,7 @@ def vcf_to_cf(args):
         genomeRecords = SeqIO.parse(open(args.genomeFile, 'r'), "fasta")
         
         # Write output
-        with open(args.outputFileName, "w") as fileOut:
+        with WriteGzFile(args.outputFileName) as fileOut:
             # Write header
             fileOut.write("COUNTSFILE NPOP {0} NSITES {1}\n".format(len(vcf.samples), nsites))
             fileOut.write("CHROM POS {0}\n".format(" ".join(vcf.samples)))
@@ -136,7 +137,7 @@ def vcf_to_geno(args):
     vcf = VCFTopia(args.vcfFile)
     
     # Parse VCF while writing output to file
-    with gzip.open(args.outputFileName, "wt") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         for variant in vcf:
             ref = variant.REF
             alt = variant.ALT
@@ -173,7 +174,7 @@ def vcf_to_pos(args):
     vcf = VCFTopia(args.vcfFile)
     
     # Parse VCF while writing output to file
-    with open(args.outputFileName, "w") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         for variant in vcf:
             # Skip variants if applicable
             if (not args.keepMultiallelic) and len(variant.ALT) > 1: # skip multiallelic
@@ -198,7 +199,7 @@ def vcf_to_table(args):
         sampleOrder = parse_sample_order(args.sampleOrderFile)
     
     # Write output file
-    with open(args.outputFileName, "w") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         # Write header
         fileOut.write("#CHROM\tPOS\tREF\tALT\t" + "\t".join(sampleOrder) + "\n")
         
@@ -242,7 +243,7 @@ def vcf_to_msa(args):
                 msaDict[sample].append("".join([ allele.ljust(alleleLength, "-") for allele in alleles.replace("|", "/").split("/") ]))
     
     # Write the MSA to the output file
-    with open(args.outputFileName, "w") as fileOut:
+    with WriteGzFile(args.outputFileName) as fileOut:
         for sampleID, msaGTs in msaDict.items():
             seq = "".join(msaGTs)
             fileOut.write(f">{sampleID}\n{seq}\n")

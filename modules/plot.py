@@ -8,6 +8,7 @@ from Bio import SeqIO
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vcf import VCFTopia
 from gff3 import GFF3Topia
+from parsing import read_gz_file
 
 class Plot:
     STANDARD_DIMENSION = 5
@@ -152,8 +153,9 @@ class Plot:
         if self._genomeLengths != None:
             return self._genomeLengths
         else:
-            genomeRecords = SeqIO.parse(open(self.genomeFile, "r"), "fasta")
-            self._genomeLengths = { record.id:len(record) for record in genomeRecords }
+            with read_gz_file(self.genomeFile) as fileIn:
+                genomeRecords = SeqIO.parse(fileIn, "fasta")
+                self._genomeLengths = { record.id:len(record) for record in genomeRecords }
             return self._genomeLengths
     
     @property
