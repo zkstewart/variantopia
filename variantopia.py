@@ -8,11 +8,14 @@
 import os, argparse, sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from modules.validation import validate_m, validate_m_plot, validate_m_report, \
+from modules.validation import validate_m, \
+    validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
+    validate_m_report, validate_m_report_pv, validate_m_report_ps, \
     validate_v, validate_v_plot, validate_v_stats, validate_v_to, \
     validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
-from modules.msa import msa_plot_stats, msa_to_variant_report, msa_to_sequence_report
+from modules.msa import msa_to_variant_report, msa_to_sequence_report
+from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.vcf import vcf_stats
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
@@ -117,6 +120,72 @@ def main():
                                     required=False,
                                     help="""Optionally, specify the output plot height (default=6)""",
                                     default=6)
+    
+    # MSA > plot > alignment mode
+    msaplotalignparser = subMsaPlotParsers.add_parser("alignment",
+                                                      parents=[p],
+                                                      add_help=False,
+                                                      help="Visualise alignment")
+    msaplotalignparser.add_argument("-i", dest="msaFiles",
+                                    required=True,
+                                    nargs="+",
+                                    help="""Specify the location(s) of MSA FASTA file(s) to plot
+                                    and/or directories containing MSA files which end with
+                                    any of the indicated --suffix values""")
+    msaplotalignparser.add_argument("-o", dest="outputDirectory",
+                                    required=True,
+                                    help="Location to write output files")
+    msaplotalignparser.add_argument("-s", dest="statistic",
+                                    required=True,
+                                    choices=["maf", "gaprate", "uniqueness"],
+                                    help="Specify which statistic to plot")
+    msaplotalignparser.add_argument("-f", dest="fileFormat",
+                                    required=True,
+                                    choices=["png", "pdf", "svg"],
+                                    help="Specify what file type to produce")
+    msaplotalignparser.add_argument("--metadata", dest="metadataGroups",
+                                    required=False,
+                                    help="""If you are choosing to produce '-s uniqueness'
+                                    statistics, you must provide a headerless two-column tab-separated
+                                    file with a unique prefix (left) followed by its group number
+                                    (1 or 2; or 0 to exclude sample from calculation)""",
+                                    default=None)
+    msaplotalignparser.add_argument("--domtblout", dest="domtbloutFileName",
+                                    required=False,
+                                    help="""If you want to annotate domains atop the MSA visual,
+                                    specify a HMMER3 domtblout file containing predictions for all
+                                    sequences which might be located in any -i files.""",
+                                    default=None)
+    msaplotalignparser.add_argument("--annotarium", dest="annotariumDir",
+                                    required=False,
+                                    help="""If you specify --domtblout, you need to additionally indicate
+                                    the location of the annotarium repository so variantopia can
+                                    import necessary code""",
+                                    default=None)
+    msaplotalignparser.add_argument("--suffix", dest="suffixes",
+                                    required=False,
+                                    nargs="+",
+                                    help="""Optionally, specify one or more suffixes
+                                    to identify MSA files in any directories
+                                    specified with -i; default is '.fa .fasta .fna .faa .fas'""",
+                                    default=[".fa", ".fasta", ".fna", ".faa", ".fas"])
+    msaplotalignparser.add_argument("--width", dest="width",
+                                    type=int,
+                                    required=False,
+                                    help="""Optionally, specify the output plot width (default=10)""",
+                                    default=10)
+    msaplotalignparser.add_argument("--height", dest="height",
+                                    type=int,
+                                    required=False,
+                                    help="""Optionally, specify the output plot height (default=6)""",
+                                    default=6)
+    msaplotalignparser.add_argument("--wrap", dest="wrapLength",
+                                    type=int,
+                                    required=False,
+                                    help="""Optionally, specify the length of residues to display as a
+                                    single line before wrapping occurs onto a subsequent
+                                    line (default=60)""",
+                                    default=60)
     
     # MSA > report subparser
     msareportparser = subMSAParsers.add_parser("report",
@@ -467,18 +536,22 @@ def mmain(args):
         validate_m_plot(args)
         if args.msaPlotMode == "stats":
             print("## Plot MSA statistics ##")
+            validate_m_plot_stats(args)
             msa_plot_stats(args)
         if args.msaPlotMode == "alignment":
             print("## Plot MSA alignment ##")
+            validate_m_plot_alignment(args)
             msa_plot_alignment(args)
     
     elif args.msaMode == "report":
         validate_m_report(args)
         if args.msaReportMode == "per_variant":
             print("## Per-variant MSA variant report ##")
+            validate_m_report_pv(args)
             msa_to_variant_report(args)
         elif args.msaReportMode == "per_sequence":
             print("## Per-sequence MSA variant report ##")
+            validate_m_report_ps(args)
             msa_to_sequence_report(args)
     
     print("MSA analysis complete!")

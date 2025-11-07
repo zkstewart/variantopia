@@ -1,8 +1,6 @@
 import os, sys
 import pandas as pd
 import numpy as np
-import matplotlib.colors
-import matplotlib.pyplot as plt
 from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -150,29 +148,38 @@ class MSATopia:
         if groups == None:
             raise ValueError("calculate_uniqueness requires the 'groups' metadata variable")
         
-        if len(column) != len(groups):
-            raise ValueError("MSA column and metadata groups must have equal len")
-        
         consensus, alts = MSATopia.consensus_and_alt_residues(column)
         
-        group1, group2 = 0, 0
-        for residue, group in zip(column, groups):
-            if residue != consensus:
-                if group == 1:
-                    group1 += 1
-                elif group == 2:
-                    group2 += 1
-                elif group == 0 or group == None:
-                    pass
-                else:
-                    raise ValueError(f"group value must be in [0,1,2,None], not '{group}'")
+        group1Variants, group2Variants = 0, 0
+        group1Samples, group2Samples = 0, 0
+        for seqID, residue in column.to_dict().items():
+            # Find which group this sample belongs to
+            prefixMatch = [ (prefix, group) for prefix, group in groups.items() if seqID.startswith(prefix) ]
+            if len(prefixMatch) == 0:
+                raise ValueError(f"'{seqID}' does not start with a prefix in the groups metadata dictionary")
+            if len(prefixMatch) > 1:
+                foundPrefixes = [ x for x,y in prefixMatch ]
+                raise ValueError(f"'{seqID}' matches multiple group metadata values ({foundPrefixes})")
+            
+            prefix, group = prefixMatch[0]
+            
+            # Tally group and variant occurrence
+            if str(group) == "1":
+                group1Samples += 1
+                if residue != consensus:
+                    group1Variants += 1
+            elif str(group) == "2":
+                group2Samples += 1
+                if residue != consensus:
+                    group2Variants += 1
         
+        # Convert into "uniqueness percent"
         try:
-            group1Ratio = group1 / sum([ 1 for x in groups if x == 1 ])
+            group1Ratio = group1Variants / group1Samples
         except ZeroDivisionError:
             group1Ratio = 0.0
         try:
-            group2Ratio = group2 / sum([ 1 for x in groups if x == 2 ])
+            group2Ratio = group2Variants / group2Samples
         except ZeroDivisionError:
             group2Ratio = 0.0
         
@@ -243,261 +250,6 @@ class MSATopia:
             self.nrow,
             self.ncol
         )
-
-class MSAStatsPlot:
-    STANDARD_DIMENSION = 5
-    
-    def __init__(self, msaFiles, statistic,
-                 width=None, height=None):
-        '''
-        Parameters:
-            msaFiles -- a list of strings indicating the MSA files to plot
-            statistic -- a string indicating the statistic to plot; currently supported
-                         values are "gc", "mac", "maf", "gaprate", "uniqueness"
-            width -- an integer indicating the width of the plot in inches; if None,
-                     defaults to MSAStatsPlot.STANDARD_DIMENSION * number of regions
-            height -- an integer indicating the height of the plot in inches; if None,
-                      defaults to MSAStatsPlot.STANDARD_DIMENSION * number of rows
-        '''
-        # Behaviour parameters
-        self.statistic = statistic
-        
-        # Data files
-        self.msaFiles = msaFiles
-        
-        # Aesthetic parameters
-        self.width = width
-        self.height = height
-        
-        # Default values unset by initialization
-        self._colourMap = None
-    
-    @property
-    def msaFiles(self):
-        return self._msaFiles
-    
-    @msaFiles.setter
-    def msaFiles(self, value):
-        if not isinstance(value, list):
-            raise TypeError("msaFiles must be a list of strings")
-        for item in value:
-            if not isinstance(item, str):
-                raise TypeError("msaFiles must be a list of strings")
-            if not os.path.isfile(item):
-                raise FileNotFoundError(f"msaFile '{item}' is not a file")
-        
-        self._msaFiles = value
-    
-    @property
-    def statistic(self):
-        return self._statistic
-    
-    @statistic.setter
-    def statistic(self, value):
-        ACCEPTED_STATISTICS = ["gc", "mac", "maf", "gaprate", "uniqueness"]
-        if value in ACCEPTED_STATISTICS:
-            self._statistic = value
-        else:
-            raise TypeError(f"statistic must be a string from {ACCEPTED_STATISTICS}, not '{value}'")
-    
-    @property
-    def statFunction(self):
-        if self.statistic == "gc":
-            return MSATopia.calculate_gc
-        elif self.statistic == "mac":
-            return MSATopia.calculate_mac
-        elif self.statistic == "maf":
-            return MSATopia.calculate_maf
-        elif self.statistic == "gaprate":
-            return MSATopia.calculate_gaprate
-        elif self.statistic == "uniqueness":
-            return MSATopia.calculate_uniqueness
-        else:
-            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .statFunction")
-    
-    @property
-    def colourMap(self):
-        if self._colourMap is None:
-            return "viridis"
-        return self._colourMap
-    
-    @colourMap.setter
-    def colourMap(self, value):
-        ACCEPTED_COLOUR_MAPS = ["viridis", "Greys", "GnBu", "RdBu"]
-        if value in ACCEPTED_COLOUR_MAPS:
-            self._colourMap = value
-        else:
-            raise TypeError(f"colourMap must be a string from {ACCEPTED_COLOUR_MAPS}, not '{value}'")
-    
-    @property
-    def cmap(self):
-        return getattr(plt.cm, self.colourMap)
-    
-    @property
-    def dtype(self):
-        if self.statistic == "gc":
-            return np.float64
-        elif self.statistic == "mac":
-            return np.float64
-        elif self.statistic == "maf":
-            return np.float64
-        elif self.statistic == "gaprate":
-            return np.float64
-        elif self.statistic == "uniqueness":
-            return np.float64
-        else:
-            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .dtype")
-    
-    @property
-    def width(self):
-        if self._width is None:
-            return MSAStatsPlot.STANDARD_DIMENSION
-        return self._width
-    
-    @width.setter
-    def width(self, value):
-        if value == None:
-            self._width = None
-            return
-        else:
-            if not isinstance(value, int):
-                raise TypeError("width must be an integer")
-            if value < 1:
-                raise ValueError(f"width must be >= 1")
-            
-            self._width = value
-    
-    @property
-    def height(self):
-        if self._height is None:
-            return MSAStatsPlot.STANDARD_DIMENSION
-        return self._height
-    
-    @height.setter
-    def height(self, value):
-        if value == None:
-            self._height = None
-            return
-        else:
-            if not isinstance(value, int):
-                raise TypeError("height must be an integer")
-            if value < 1:
-                raise ValueError(f"height must be >= 1")
-
-            self._height = value
-    
-    def get_x_y(self, msaFile, groupDict=None):
-        '''
-        Returns the x list and y array needed for broken_barh plotting of MSA
-        statistics. Method of operation is dictated by self.statistic.
-        Returned objects have a length equal to the number of residues in the alignment,
-        where the y array values indicate the relevant statistic for each position.
-        
-        Parameters:
-            msaFile -- a string indicating the MSA file to plot
-        Returns:
-            x -- a list containing tuples of (x, 1) where x is the position index
-                 and 1 is the length of the position as needed by broken_barh
-            y -- a np.array containing the statFunction transformed values for
-                 each variant/window
-        '''
-        # Load the MSA
-        msa = MSATopia(msaFile)
-        
-        # Lay out the y values in a numpy array
-        y = []
-        for i, column in enumerate(msa.columns):
-            if self.statistic == "uniqueness":
-                y.append(self.statFunction(column, groupDict))
-            else:
-                y.append(self.statFunction(column))
-        y = np.array(y, dtype=self.dtype)
-        
-        # Create the x array
-        x = [ (i, 1) for i in np.arange(0, len(y)) ]
-        
-        return x, y
-    
-    def plot(self, outputFileName, groupDict=None):
-        '''
-        Plots the specified .statistic for the MSA.
-        
-        Parameters:
-            outputFileName -- a string indicating the location to write plot output to;
-                              assumes file name is pre-validated to ensure no overwriting
-                              and to have a valid filename suffix to control the file format
-            groupDict -- (OPTIONAL) if self.statistic == "uniqueness" you must specify
-                         a dictionary where sequence prefixes are keys and values are
-                         1 (group1), 2 (group2), 0 or None (ignore). All sequences must
-                         match a single unique prefix.
-        '''
-        SPACING = 0.1
-        
-        # Obtain data for plotting
-        msaLabels = []
-        msaArrays = []
-        for msaFile in self.msaFiles:
-            msaLabels.append(os.path.basename(msaFile).rsplit(".", maxsplit=1)[0])
-            msaArrays.append(self.get_x_y(msaFile, groupDict))
-        
-        # Sort data from longest to shortest
-        msaArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
-        
-        # Obtain the minimum and maximum values being plotted
-        minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf
-        for x, y in msaArrays:
-            statMin, statMax = np.min(y), np.max(y)
-            if statMin < minValue:
-                minValue = statMin
-            if statMax > maxValue:
-                maxValue = statMax
-            if len(y) > maxLen:
-                maxLen = len(y)
-        
-        # Establish colour map
-        norm = matplotlib.colors.Normalize(vmin=minValue, vmax=maxValue)
-        
-        # Configure plot
-        fig = plt.figure(figsize=(self.width, self.height), tight_layout=True)
-        ax = plt.axes()
-        
-        # Configure x-axis labels
-        ax.set_xlabel(f"Length (residues)", fontweight="bold")
-        ax.set_xlim(0, maxLen)
-        
-        # Plot each MSA
-        ongoingCount = 0.5 # this centers the contig label
-        for x, y in msaArrays:
-            ax.broken_barh(x, (ongoingCount+SPACING, 1-(SPACING*2)), facecolors=self.cmap(norm(y)))
-            ongoingCount += 1
-        ax.set_ylim(0.5+SPACING, ongoingCount-SPACING)
-        
-        # Indicate y-axis labels
-        ax.set_ylabel("") # no y-axis title label
-        ax.set_yticks(range(1, len(msaLabels)+1))
-        ax.set_yticklabels(msaLabels)
-        
-        # Show the colour scale legend
-        sm = plt.cm.ScalarMappable(cmap=self.cmap, norm=norm)
-        sm.set_array([])
-        fig.colorbar(sm, ax=ax, orientation="vertical",
-                     label="GC" if self.statistic == "gc" else \
-                           "Minor Allele Count" if self.statistic == "mac" else \
-                           "Minor Allele Frequency" if self.statistic == "maf" else \
-                           "Gap Rate" if self.statistic == "gaprate" else \
-                           "Uniqueness" if self.statistic == "uniqueness" else \
-                           "labeltypenothandled")
-        
-        # Save output file
-        plt.savefig(outputFileName)
-        plt.close()
-
-def msa_plot_stats(args):
-    plot = MSAStatsPlot(args.msaFiles, statistic=args.statistic,
-                        width=args.width, height=args.height
-    )
-    plot.colourMap = args.colourMap
-    plot.plot(args.outputFileName)
 
 def msa_to_variant_report(args):
     with WriteGzFile(args.outputFileName) as fileOut:

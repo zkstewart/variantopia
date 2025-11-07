@@ -1,4 +1,4 @@
-import os, sys
+import os, sys, importlib
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file
@@ -11,6 +11,9 @@ def parse_text_list(fileName):
     return ids
 
 # msa mode
+class MissingArgumentError(Exception):
+    pass
+
 def validate_m(args):
     '''
     Validation for arguments common to all "msa" mode commands.
@@ -34,33 +37,16 @@ def validate_m(args):
         else:
             raise FileNotFoundError(f"-i file or directory '{location}' not found!")
     args.msaFiles = msaFiles
-    
-    # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
 def validate_m_plot(args):
     '''
     Validation for arguments common to all "msa plot" mode commands.
     '''
-    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
-    
     # Validate numeric arguments
     if args.width < 1:
         raise ValueError("--width must be a positive integer greater than 0.")
     if args.height < 1:
         raise ValueError("--height must be a positive integer greater than 0.")
-    
-    # Validate output file name
-    if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
-        raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
-
-def validate_m_plot_stats(args):
-    '''
-    Validation for arguments used in "msa plot stats" mode.
-    '''
-    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
     
     # Validate metadataGroups file
     if args.statistic == "uniqueness":
@@ -71,11 +57,75 @@ def validate_m_plot_stats(args):
         if not os.path.isfile(args.metadataGroups):
             raise FileNotFoundError(f"Metadata file (--metadata {args.metadataGroups}) does not exist!")
 
+def validate_m_plot_stats(args):
+    '''
+    Validation for arguments used in "msa plot stats" mode.
+    '''
+    ALLOWED_EXTENSIONS = [".png", ".pdf", ".svg"]
+    
+    # Validate output file location and name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+    
+    if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
+
+def validate_m_plot_alignment(args):
+    '''
+    Validation for arguments used in "msa plot alignment" mode.
+    '''
+    # Validate numeric arguments
+    if args.wrapLength < 1:
+        raise ValueError("--wrap must be a positive integer greater than 0.")
+    
+    # Validate domtblout file
+    if args.domtbloutFileName != None:
+        args.domtbloutFileName = os.path.abspath(args.domtbloutFileName)
+        if not os.path.isfile(args.domtbloutFileName):
+            raise FileNotFoundError(f"domtblout file (--domtblout {args.domtbloutFileName}) does not exist!")
+        
+        # Validate annotarium location
+        if args.annotariumDir == None:
+            raise MissingArgumentError("--annotarium is mandatory since you have specified --domtblout")
+        
+        args.annotariumDir = os.path.abspath(args.annotariumDir)
+        if not os.path.isdir(args.annotariumDir):
+            raise FileNotFoundError(f"annotarium location (--annotarium {args.annotariumDir}) does not exist!")
+        
+        # Validate that necessary modules are discoverable
+        try:
+            sys.path.append(os.path.dirname(args.annotariumDir))
+            from annotarium import Domains, OverlapResolver
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(f"Could not import Domains and OverlapResolver from '{args.annotariumDir}'")
+    
+    # Handle output location
+    args.outputDirectory = os.path.abspath(args.outputDirectory)
+    if not os.path.exists(args.outputDirectory):
+        os.makedirs(args.outputDirectory, exist_ok=True)
+        print(f"# Created '{args.outputDirectory}' as part of argument validation")
+
 def validate_m_report(args):
     '''
-    Validation for arguments used in "msa report" mode.
+    Validation for arguments common to all "msa report" mode commands.
     '''
-    pass # no specific validation needed for 'msa report' mode
+    # Validate output file location and name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_m_report_pv(args):
+    '''
+    Validation for arguments used in "msa report per_variant" mode.
+    '''
+    pass # no specific validation needed for 'msa report per_variant' mode
+
+def validate_m_report_ps(args):
+    '''
+    Validation for arguments used in "msa report per_sequence" mode.
+    '''
+    pass # no specific validation needed for 'msa report per_sequence' mode
 
 # vcf mode
 def validate_v(args):
@@ -149,6 +199,15 @@ def validate_v_plot(args):
         raise ValueError("--width must be a positive integer greater than 0.")
     if args.height < 1:
         raise ValueError("--height must be a positive integer greater than 0.")
+    
+    # Validate metadataGroups file
+    if args.statistic == "uniqueness":
+        if args.metadataGroups == None:
+            raise ValueError(f"'-s uniqueness' requires that you specify a file to --metadata")
+        
+        args.metadataGroups = os.path.abspath(args.metadataGroups)
+        if not os.path.isfile(args.metadataGroups):
+            raise FileNotFoundError(f"Metadata file (--metadata {args.metadataGroups}) does not exist!")
     
     # Validate output file name
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
