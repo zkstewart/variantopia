@@ -12,11 +12,11 @@ from modules.validation import validate_m, validate_m_plot, validate_m_report, \
     validate_v, validate_v_plot, validate_v_stats, validate_v_to, \
     validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
-from modules.copynum import copynum_plot
 from modules.msa import msa_plot_stats, msa_to_variant_report, msa_to_sequence_report
-from modules.plot import vcf_plot
-from modules.reformat import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
-from modules.stats import stats_to_tsv
+from modules.vcf import vcf_stats
+from modules.vcfcopynum import copynum_plot
+from modules.vcfplot import vcf_plot
+from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
 from _version import __version__
 
 def main():
@@ -498,7 +498,7 @@ def vmain(args):
     if args.vcfMode == "stats":
         print("## Generate VCF file statistics ##")
         validate_v_stats(args)
-        stats_to_tsv(args)
+        vcf_stats(args)
     if args.vcfMode == "filter":
         print("## Filter VCF file ##")
         raise NotImplementedError("'vcf filter' mode not yet implemented")
