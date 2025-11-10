@@ -522,7 +522,7 @@ def main():
     elif args.mode == "vcf":
         print("## variantopia.py - VCF file handling ##")
         validate_v(args)
-        rmain(args)
+        vmain(args)
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
