@@ -388,35 +388,45 @@ class MSAPlotAlignment(MSAPlot):
         self.domains.parse_domtblout(fileName)
         self.domains.resolve_overlaps() # preliminary overlap resolution per-sequence
     
-    def _override_consensus_identity(self, msaFile, groupDict=None):
+    def get_y(self, msaFile, groupDict=None):
         '''
         Handles the overriding PyMSAViz's default consensus identity bar plot with an
         alternative statistic (dictated by self.statistic).
         
         Parameters:
             msaFile -- a string indicating the MSA file to plot
+            groupDict -- (OPTIONAL) if self.statistic == "uniqueness" you must specify
+                         a dictionary where sequence prefixes are keys and values are
+                         1 (group1), 2 (group2), 0 or None (ignore). All sequences must
+                         match a single unique prefix.
         Returns:
-            x -- a list containing tuples of (x, 1) where x is the position index
-                 and 1 is the length of the position as needed by broken_barh
             y -- a np.array containing the statFunction transformed values for
                  each variant/window
         '''
-        # Load the MSA
         msa = MSATopia(msaFile)
         
-        # Lay out the y values in a numpy array
+        # Calculate each variant's statistic
         y = []
         for column in msa.columns:
             if self.statistic == "uniqueness":
                 y.append(self.statFunction(column, groupDict))
             else:
                 y.append(self.statFunction(column))
+        
+        # Convert to numpy array and return
         y = np.array(y, dtype=self.dtype)
+        return y
+    
+    def _override_consensus_identity(self, y):
+        '''
+        Handles the overriding PyMSAViz's default consensus identity bar plot with an
+        alternative statistic in the y array
         
-        # Re-scale y value to be 0->100
-        y = y*100 # PyMSAViz does not use a 0->1 ratio
-        
-        # Override the method
+        Parameters:
+            y -- a np.array containing the statFunction transformed values for
+                 each variant/window
+        '''
+        y = y*100 # PyMSAViz uses 0->100 not a 0->1 ratio
         MsaViz._get_consensus_identity_list = lambda x, start, end: y[start:end]
     
     def plot(self, outputFileLocation, fileFormat, groupDict=None):
@@ -430,7 +440,8 @@ class MSAPlotAlignment(MSAPlot):
             outputFileLocation -- a string indicating the location to write plot output(s) to;
                                   file names will be set according to the original MSA file name
                                   sans its file suffix.
-            fileFormat -- 
+            fileFormat -- a string indicating the file format to write; accepted choices
+                          are "png" or "pdf" or "svg"
             groupDict -- (OPTIONAL) if self.statistic == "uniqueness" you must specify
                          a dictionary where sequence prefixes are keys and values are
                          1 (group1), 2 (group2), 0 or None (ignore). All sequences must
@@ -490,7 +501,8 @@ class MSAPlotAlignment(MSAPlot):
             
             # Modify the statistic to plot underneath the alignment
             if self.statistic != "maf": # consensus visual shows maf by default
-                self._override_consensus_identity(msaFile, groupDict=groupDict)
+                y = self.get_y(msaFile, groupDict=groupDict)
+                self._override_consensus_identity(y)
             
             # Annotate domain locations
             for i, feature in enumerate(msaDomains):
