@@ -591,11 +591,14 @@ class VCFTopia:
             
             # Calculate DP-AD value (useful for ploidy change inference)
             if len(statsDict["DP"]) != 0 and len(statsDict["AD"]) != 0:
-                statsDict["DP-AD"] = statsDict["DP"] - statsDict["AD"]
-                statsDict["DP-AD_median"] = np.median(statsDict["DP-AD"])
-                statsDict["DP-AD_mean"] = np.mean(statsDict["DP-AD"])
-                
-                del statsDict["DP-AD"] # wipe so it doesn't contaminate the pd.Dataframe
+                if len(statsDict["DP"]) == len(statsDict["AD"]):
+                    dpMinusAd = statsDict["DP"] - statsDict["AD"]
+                    statsDict["DP-AD_median"] = np.median(dpMinusAd)
+                    statsDict["DP-AD_mean"] = np.mean(dpMinusAd)
+                else:
+                    print("WARNING: Inconsistency between count of 'DP' and 'AD' values; cannot calculate DP-AD statistic")
+                    statsDict["DP-AD_median"] = None
+                    statsDict["DP-AD_mean"] = None
             else:
                 statsDict["DP-AD_median"] = None
                 statsDict["DP-AD_mean"] = None
