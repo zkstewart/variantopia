@@ -29,7 +29,7 @@ def read_gz_file(filename):
         with open(filename, "r", encoding=get_codec(filename)) as f:
             yield f
 
-class WriteGzFile:
+class GzCapableWriter:
     def __init__(self, filename):
         self.filename = filename
         self.file = None

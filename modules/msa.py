@@ -1,10 +1,15 @@
 import os, sys
 import pandas as pd
 import numpy as np
+import scipy.spatial.distance as ssd
 from Bio import SeqIO
+from scipy.cluster import hierarchy
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from parsing import read_gz_file, WriteGzFile
+from parsing import read_gz_file, GzCapableWriter
+
+class DirectoryNotFoundError(Exception):
+    pass
 
 class MSATopia:
     def __init__(self, msaFile):
@@ -185,6 +190,28 @@ class MSATopia:
         
         return abs(group1Ratio - group2Ratio)
     
+    def calculate_identity(self, seqid1, seqid2):
+        '''
+        Calculates the identity between a pair of sequences contained within this MSA.
+        
+        Parameters:
+            seqid1 / seqid2 -- strings that identify sequences found within self.rowNames
+                               and obtained by self[seqid1] and self[seqid2]
+        '''
+        if not seqid1 in self:
+            raise KeyError(f"'{seqid1}' not found within this MSA")
+        if not seqid2 in self:
+            raise KeyError(f"'{seqid2}' not found within this MSA")
+        
+        if seqid1 == seqid2:
+            return 1.0
+        
+        pwDf = self[[seqid1, seqid2]].loc[:, (self[[seqid1, seqid2]] != "-").any(axis=0)]
+        if pwDf.shape[1] == 0:
+            return 0.0
+        else:
+            return (pwDf.loc[seqid1] == pwDf.loc[seqid2]).sum() / pwDf.shape[1]
+    
     @property
     def msaFile(self):
         return self._msaFile
@@ -221,8 +248,8 @@ class MSATopia:
     
     @property
     def columns(self):
-        for col in self.df.columns:
-            yield self.df[col]
+        for colIndex in self.df.columns:
+            yield self.df[colIndex]
     
     def load_msa(self, msaFile):
         msaDict = {}
@@ -231,6 +258,116 @@ class MSATopia:
             for record in records:
                 msaDict[record.id] = list(record.seq)
         self.df = pd.DataFrame.from_dict(msaDict, orient="index")
+    
+    def clean_gaps(self):
+        '''
+        Cleans up this MSA to remove any columns that are solely gaps. This might occur if
+        you've been deleting sequences or otherwise modifying things.
+        '''
+        # Find and drop columns
+        toDrop = []
+        for colIndex in self.df.columns:
+            column = self.df[colIndex]
+            if (column == "-").all():
+                toDrop.append(colIndex)
+        self.df.drop(columns=toDrop, inplace=True)
+    
+    def keep(self, idsList):
+        '''
+        Keeps only IDs listed in idsList for this MSA object.
+        
+        Parameters:
+            idsList -- a list containing strings which must occur within this MSA object.
+        Modifies:
+            self.df --  the underlying MSA representation is changed to retain only the sequences
+                        identified by idsList. Runs .clean_gaps() automatically.
+        '''
+        for seqID in idsList:
+            if not seqID in self:
+                raise KeyError(f"'{seqID}' cannot be kept as it is not contained within this MSA")
+        
+        toKeep = set(idsList) # remove potential duplicates
+        toKeep = [ x for x in self.rowNames if x in toKeep ] # maintain order of original MSA
+        self.df = self.df.loc[toKeep]
+        self.clean_gaps()
+    
+    def remove(self, idsList):
+        '''
+        Deletes several IDs as listed in idsList all at once from this MSA object. 
+        
+        Parameters:
+            idsList -- a list containing strings which must occur within this MSA object.
+        Modifies:
+            self.df --  the underlying MSA representation is changed akin to performing
+                        'del self[seqid]' for each value in idsList. Runs .clean_gaps()
+                        automatically.
+        '''
+        for seqID in idsList:
+            if not seqID in self:
+                raise KeyError(f"'{seqID}' cannot be removed as it is not contained within this MSA")
+        
+        toRemove = set(idsList)
+        if len(toRemove) == self.nrow:
+            raise ValueError(".remove cannot be performed as it would remove all members of this MSA")
+        
+        toKeep = set(self.rowNames).difference(toRemove) # invert deletion list to become toKeep list
+        toKeep = [ x for x in self.rowNames if x in toKeep ] # maintain order of original MSA
+        self.df = self.df.loc[toKeep]
+        self.clean_gaps()
+    
+    def hierarchical_reorder(self):
+        '''
+        Applies a simple hierarchical clustering algorithm to a pairwise matrix of sequence
+        identities and reorders the MSA inplace corresponding to this.
+        '''
+        # Format a pairwise matrix of distances
+        pwDict = { x: {y: None for y in self.rowNames } for x in self.rowNames }
+        for x, yDict in pwDict.items():
+            for y in yDict.keys():
+                pwDict[x][y] = identity = self.calculate_identity(x, y)
+        pwDf = pd.DataFrame.from_dict(pwDict)
+        pwDf = pwDf.apply(lambda x: 1-x) # go from identity (/similarity) to distance)
+        
+        # Run hierarchical clustering of sequence distances
+        distArray = ssd.squareform(pwDf)
+        hier = hierarchy.linkage(distArray, method="ward")  # you can use other methods
+        clusterLabels = hierarchy.fcluster(hier, 0, criterion="distance")
+        
+        # Get the ordered sequences from clustering labels
+        sequenceSorting = sorted(zip(pwDf.columns.tolist(), clusterLabels), key = lambda x: x[1])
+        sequencesSorted = [ seqID for seqID, clustNum in sequenceSorting ]
+        
+        # Reorder the underlying msa DataFrame
+        self.df = self.df.loc[sequencesSorted]
+    
+    def write(self, outputFileName):
+        '''
+        Writes an output FASTA multiple sequence alignment. File overwriting is not allowed.
+        
+        Parameters:
+            outputFileName -- a string pointing to a file location that does not already exist.
+                              If full path is given, the parent folder(s) must already exist.
+        '''
+        outputFileName = os.path.abspath(outputFileName)
+        if os.path.exists(outputFileName):
+            raise FileExistsError(f"Cannot .write MSA to '{outputFileName}' as it already exists!")
+        parentDir = os.path.dirname(outputFileName)
+        if not os.path.isdir(parentDir):
+            raise DirectoryNotFoundError(f"Cannot .write MSA '{os.path.basename(outputFileName)}' as " + 
+                                         f"its parent directory '{parentDir}' does not exist!")
+        
+        with GzCapableWriter(outputFileName) as fileOut:
+            for seqID, seqRow in self:
+                seq = "".join(seqRow)
+                fileOut.write(f">{seqID}\n{seq}\n")
+    
+    def __delitem__(self, key):
+        if not key in self:
+            raise KeyError(f"'{key}' cannot be deleted as it is not contained within this MSA")
+        
+        # Drop the sequence row
+        self.df.drop(key, inplace=True)
+        self.clean_gaps() # just in case this introduced gaps
     
     def __getitem__(self, key):
         return self.df.loc[key]
@@ -252,7 +389,7 @@ class MSATopia:
         )
 
 def msa_to_variant_report(args):
-    with WriteGzFile(args.outputFileName) as fileOut:
+    with GzCapableWriter(args.outputFileName) as fileOut:
         fileOut.write("#gene\tposition_number\tconsensus_residue\tvariant_residue\tseqs_with_variant\n")
         
         for msaFile in args.msaFiles:
@@ -282,7 +419,7 @@ def msa_to_variant_report(args):
                         foundStop.update(hasVariant)
 
 def msa_to_sequence_report(args):
-    with WriteGzFile(args.outputFileName) as fileOut:
+    with GzCapableWriter(args.outputFileName) as fileOut:
         fileOut.write("#gene\tsequence_id\tvariants\n")
         
         for msaFile in args.msaFiles:
