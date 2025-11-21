@@ -320,6 +320,9 @@ class MSATopia:
         Applies a simple hierarchical clustering algorithm to a pairwise matrix of sequence
         identities and reorders the MSA inplace corresponding to this.
         '''
+        if self.nrow < 2:
+            return # cannot reorder fewer than 3 sequences
+        
         # Format a pairwise matrix of distances
         pwDict = { x: {y: None for y in self.rowNames } for x in self.rowNames }
         for x, yDict in pwDict.items():
