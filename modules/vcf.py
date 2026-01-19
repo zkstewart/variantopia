@@ -667,7 +667,7 @@ def vcf_reheader(args):
                 
                 # Format and write updated line
                 newsl = sl[0:9] + newSamples
-                fileOut.write("\t".join(newsl) + "\r\n" if line.endswith("\r\n") else "\n")
+                fileOut.write("\t".join(newsl) + ("\r\n" if line.endswith("\r\n") else "\n"))
             else:
                 fileOut.write(line)
 
