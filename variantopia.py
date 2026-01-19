@@ -16,7 +16,7 @@ from modules.validation import validate_m, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
-from modules.vcf import vcf_stats
+from modules.vcf import vcf_stats, vcf_reheader
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
 from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
