@@ -213,6 +213,14 @@ def validate_v_plot(args):
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
+def validate_v_reheader(args):
+    '''
+    Validation for arguments used by "vcf reheader" mode.
+    '''
+    # Validate metadata file
+    if not os.path.isfile(args.metadataTsv):
+        raise FileNotFoundError(f"Metadata file (-m {args.metadataTsv}) does not exist!")
+
 def validate_v_stats(args):
     '''
     Validation for arguments used by "vcf stats" mode.

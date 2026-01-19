@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
-    validate_v, validate_v_plot, validate_v_stats, validate_v_to, \
+    validate_v, validate_v_plot, validate_v_reheader, validate_v_stats, validate_v_to, \
     validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
@@ -362,6 +362,29 @@ def main():
                              help="""Optionally, specify the output plot height (default=6)""",
                              default=6)
     
+    # VCF > reheader mode
+    vreheaderparser = subVcfParsers.add_parser("reheader",
+                                               parents=[p],
+                                               add_help=False,
+                                               help="Update the samples in the header of a VCF file")
+    vreheaderparser.set_defaults(func=vmain)
+    vreheaderparser.add_argument("-i", dest="vcfFile",
+                                 required=True,
+                                 help="Location of VCF file")
+    vreheaderparser.add_argument("-m", dest="metadataTsv",
+                                 required=True,
+                                 help="Location of metadata file with old:new identifier pairs")
+    vreheaderparser.add_argument("-o", dest="outputFileName",
+                                 required=True,
+                                 help="Location to write statistics output")
+    vreheaderparser.add_argument("--allowNoMatch", dest="allowNoMatch",
+                                 required=False,
+                                 action="store_true",
+                                 help="""Optionally provide this flag if you want to allow samples in the VCF
+                                 header to have no match in the metadata TSV; in practice this lets you rename
+                                 just a subset of samples rather than enforcing complete replacement""",
+                                 default=False)
+    
     # VCF > stats mode
     vstatsparser = subVcfParsers.add_parser("stats",
                                             parents=[p],
@@ -568,6 +591,10 @@ def vmain(args):
         print("## Plot VCF variant information ##")
         validate_v_plot(args)
         vcf_plot(args)
+    if args.vcfMode == "reheader":
+        print("## Update VCF file header ##")
+        validate_v_reheader(args)
+        vcf_reheader(args)
     if args.vcfMode == "stats":
         print("## Generate VCF file statistics ##")
         validate_v_stats(args)

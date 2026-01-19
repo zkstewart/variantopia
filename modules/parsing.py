@@ -70,3 +70,32 @@ def parse_metadata_groups(metadataGroupsFile):
                 
                 metadataGroups[species] = group
     return metadataGroups
+
+def parse_2col_tsv_as_dict(tsvFile, keyIsLeft=True):
+    '''
+    General purpose parser for 2-column TSV to render a dictionary pairing
+    one column (key) to the other (value) according to the keyIsLeft behavioural boolean.
+    
+    Parameters:
+        tsvFile -- a string indicating the location of the file to parse
+        keyIsLeft -- (OPTIONAL) a boolean controlling whether the left column should be
+                     the dictionary key (default; ==True) or if this should be inversed
+                     (==False)
+    Returns:
+        tsvDict -- a dictionary pairing keys and values corresponding to TSV file column contents.
+    '''
+    tsvDict = {}
+    with read_gz_file(tsvFile) as fileIn:
+        for line in fileIn:
+            delim = "\t" if "\t" in line else ","
+            sl = line.strip().split(delim)
+            if len(sl) != 2:
+                raise ValueError(f"TSV file line should have two columns, but has {len(sl)}; offending line is '{line.rstrip()}'")
+            
+            if keyIsLeft:
+                left, right = sl
+            else:
+                right, left = sl
+            
+            tsvDict[left] = right
+    return tsvDict

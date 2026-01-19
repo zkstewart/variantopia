@@ -3,12 +3,15 @@
 # Classes and functions for parsing VCF files into suitable
 # data structures for variantopia.
 
-import os, shutil, subprocess, warnings
+import os, sys, shutil, subprocess, warnings
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
 from collections import Counter
 from copy import deepcopy
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from parsing import read_gz_file, GzCapableWriter, parse_2col_tsv_as_dict
 
 class VCFTopia:
     def __init__(self, vcfFile):
@@ -637,9 +640,40 @@ class VCFTopia:
             len(self.chroms)
         )
 
+def vcf_reheader(args):
+    '''
+    Handles "vcf reheader" mode of variantopia.
+    '''
+    metaDict = parse_2col_tsv_as_dict(args.metadataTsv)
+    
+    cleanUp = False
+    with read_gz_file(args.vcfFile) as fileIn, GzCapableWriter(args.outputFileName) as fileOut:
+        for line in fileIn:
+            if line.startswith("#CHROM"):
+                sl = line.rstrip().split("\t")
+                samples = sl[9:]
+                
+                # Run conversion of oldid to newid based on metadata file
+                newSamples = []
+                for oldid in samples:
+                    if not oldid in metaDict:
+                        if not args.allowNoMatch:
+                            raise ValueError(f"VCF sample '{oldid}' has no match in your metadata file")
+                        else:
+                            print(f"# --allowNoMatch is allowing '{oldid}' to be unchanged in the resulting VCF header")
+                            newSamples.append(oldid)
+                    else:
+                        newSamples.append(metaDict[oldid])
+                
+                # Format and write updated line
+                newsl = sl[0:9] + newSamples
+                fileOut.write("\t".join(newsl) + "\r\n" if line.endswith("\r\n") else "\n")
+            else:
+                fileOut.write(line)
+
 def vcf_stats(args):
     '''
-    Handles "reformat geno" mode of variantopia.
+    Handles "vcf stats" mode of variantopia.
     '''
     vcf = VCFTopia(args.vcfFile)
     genomeStatsDF, sampleStatDF = vcf.comprehensive_statistics()
