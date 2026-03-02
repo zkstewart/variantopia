@@ -227,6 +227,19 @@ def validate_v_stats(args):
     '''
     pass # no specific validation needed for 'vcf stats' mode
 
+def validate_v_panel(args):
+    '''
+    Validation for arguments used by "vcf panel" mode.
+    '''
+    # Validate FASTA file
+    args.fastaFile = os.path.abspath(args.fastaFile)
+    if not os.path.isfile(args.fastaFile):
+        raise FileNotFoundError(f"Genome FASTA file (-f {args.fastaFile}) does not exist!")
+    
+    # Validate numeric arguments
+    if args.numVariants < 1:
+        raise ValueError("-n must be a positive integer greater than 0.")
+
 def validate_v_to(args):
     '''
     Validation for arguments common to all "vcf to" mode commands.

@@ -11,12 +11,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
-    validate_v, validate_v_plot, validate_v_reheader, validate_v_stats, validate_v_to, \
+    validate_v, validate_v_panel, validate_v_plot, validate_v_reheader, validate_v_stats, validate_v_to, \
     validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
-from modules.vcf import vcf_stats, vcf_reheader
+from modules.vcf import vcf_stats, vcf_reheader, vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
 from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
@@ -296,6 +296,40 @@ def main():
                                a median copy number value to smooth the data; default==10000
                                but set this to 0 or 1 to turn off window smoothing""",
                                default=10000)
+    
+    # VCF > panel mode
+    vpanelparser = subVcfParsers.add_parser("panel",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Produce a panel of variants from VCF data")
+    vpanelparser.set_defaults(func=vmain)
+    
+    vpanelparser.add_argument("-i", dest="vcfFile",
+                              required=True,
+                              help="Location of VCF file containing variants to panel")
+    vpanelparser.add_argument("-f", dest="fastaFile",
+                              required=True,
+                              help="Location of reference genome FASTA file")
+    vpanelparser.add_argument("-o", dest="outputFileName",
+                              required=True,
+                              help="""Location to write the subset VCF file""")
+    vpanelparser.add_argument("-n", dest="numVariants",
+                              required=True,
+                              type=int,
+                              help="Specify the number of variants to aim for in the output panel.")
+    vpanelparser.add_argument("--vtypes", dest="variantTypes",
+                              required=False,
+                              nargs="+",
+                              choices=["snp", "mnp", "indel"],
+                              help="""Optionally specify one or more types of variants to allow for the panel;
+                              by default all variant types are allowed i.e., '--vtypes snp mnp indel'""",
+                              default=["snp", "mnp", "indel"])
+    vpanelparser.add_argument("--biallelic", dest="biallelicOnly",
+                              required=False,
+                              action="store_true",
+                              help="""Optionally, specify this flag to limit variants to biallelic calls and remove
+                              multiallelic calls from consideration""",
+                              default=False)
     
     # VCF > plot mode
     vplotparser = subVcfParsers.add_parser("plot",
@@ -587,6 +621,10 @@ def vmain(args):
             print("## VCF copy number inference plots ##")
             validate_v_cn_plot(args)
             copynum_plot(args)
+    if args.vcfMode == "panel":
+        print("## Curate a variant panel from VCF ##")
+        validate_v_panel(args)
+        vcf_panel(args)
     if args.vcfMode == "plot":
         print("## Plot VCF variant information ##")
         validate_v_plot(args)
