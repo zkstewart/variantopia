@@ -16,7 +16,8 @@ from modules.validation import validate_m, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
-from modules.vcf import vcf_stats, vcf_reheader, vcf_panel
+from modules.vcf import vcf_stats, vcf_reheader
+from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
 from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
@@ -317,6 +318,12 @@ def main():
                               required=True,
                               type=int,
                               help="Specify the number of variants to aim for in the output panel.")
+    vpanelparser.add_argument("--threads", dest="threads",
+                              required=False,
+                              type=int,
+                              help="""Optionally, specify the number of threads to use with parallelisable
+                              tasks; default == 1""",
+                              default=1)
     vpanelparser.add_argument("--vtypes", dest="variantTypes",
                               required=False,
                               nargs="+",

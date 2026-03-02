@@ -239,6 +239,8 @@ def validate_v_panel(args):
     # Validate numeric arguments
     if args.numVariants < 1:
         raise ValueError("-n must be a positive integer greater than 0.")
+    if args.threads < 1:
+        raise ValueError("--threads must be a positive integer greater than 0.")
 
 def validate_v_to(args):
     '''

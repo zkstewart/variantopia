@@ -3,16 +3,15 @@
 # Classes and functions for parsing VCF files into suitable
 # data structures for variantopia.
 
-import os, sys, shutil, subprocess, warnings, math
+import os, sys, shutil, subprocess, warnings
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
 from collections import Counter
 from copy import deepcopy
-from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from parsing import read_gz_file, BgzCapableWriter, parse_2col_tsv_as_dict, get_chunking_points
+from parsing import read_gz_file, BgzCapableWriter, parse_2col_tsv_as_dict
 
 class VCFTopia:
     def __init__(self, vcfFile):
@@ -758,118 +757,3 @@ def calculate_simple_linkage(variant1, variant2):
     linkage /= len(changes)
     
     return linkage
-
-def vcf_panel(args):
-    '''
-    Handles "vcf panel" mode of variantopia.
-    '''
-    vcf = VCFTopia(args.vcfFile)
-    
-    # Parse genome for contig lengths
-    with read_gz_file(args.fastaFile) as fileIn:
-        genomeRecords = SeqIO.parse(fileIn, "fasta")
-        lengthsDict = { record.id:len(record) for record in genomeRecords }
-    
-    # Figure out how many variants to pick per contig
-    perContig = math.ceil(args.numVariants / len(lengthsDict))
-    print(f"# Panel will aim for {args.numVariants} variants to be picked from " +
-          f"a genome with {len(lengthsDict)} contigs")
-    print(f"# With rounding, this is approximately {perContig} variant(s) per contig")
-    
-    # Get the chunking points for each contig
-    chunkPoints = {} # this will have a list of integers where the start is max(0, lastStart) and end is the integer within the list
-    for contig, length in lengthsDict.items():
-        chunkPoints[contig] = [0, *get_chunking_points(length, perContig, isNumOfChunks=True), length+1] # include start and end for chunk boundaries
-    
-    # Parse VCF with storage of statistics
-    chunkVariants = {
-        contig: {
-            i:[]
-            for i in range(0, len(points)-1)
-        }
-        for contig, points in chunkPoints.items()
-    }
-    for variant in vcf:
-        # Skip variants that are not found within our provided FASTA file
-        "This lets the FASTA file implicitly subset the VCF where that might be relevant"
-        if not variant.CHROM in chunkVariants:
-            continue
-        
-        # Skip variant if it fails variant type or biallelic filters
-        filterSNP = variant.is_snp and (not "snp" in args.variantTypes)
-        filterMNP = variant.is_mnp and (not "mnp" in args.variantTypes)
-        filterINDEL = variant.is_indel and (not "indel" in args.variantTypes)
-        
-        if filterSNP or filterMNP or filterINDEL:
-            continue
-        
-        # Calculate statistics that'll help with picking variants
-        callrate = VCFTopia.calculate_callrate(variant)
-        mac = VCFTopia.calculate_mac(variant)
-        
-        # Store statistics within this variant's genome chunk
-        chunkIndex = get_chunk_index_for_this_position(chunkPoints[variant.CHROM], variant.POS)
-        chunkVariants[variant.CHROM][chunkIndex].append([variant.POS, callrate, mac])
-    
-    # Select variants from within each chunk
-    chosenStats = {}
-    with BgzCapableWriter(args.outputFileName) as fileOut:
-        # Write VCF header
-        fileOut.write(vcf.vcf.raw_header)
-        
-        # Iterate over and select variants
-        lastVariant = None
-        for contig, chunkDict in chunkVariants.items():
-            lastVariant = None # new contig, new last variant
-            for chunkIndex, variantsList in chunkDict.items():
-                # Skip genomic chunks that were empty
-                if variantsList == []:
-                    continue
-                
-                # Calculate linkage between this variant and last chunk's selected variant
-                if lastVariant == None:
-                    variantsList = [ [*x, 0] for x in variantsList ] # [ pos, callrate, mac, linkage ]
-                else:
-                    newVariantsList = []
-                    for i, (pos, callrate, mac) in enumerate(variantsList):
-                        thisVariant = list(vcf.query(contig, (pos, pos)))[0]
-                        newVariantsList.append([pos, callrate, mac, calculate_simple_linkage(thisVariant, lastVariant)])
-                    variantsList = newVariantsList
-                
-                # Order the variants in this chunk by the scored combination of measured metrics
-                scoredVariants = [ [*x, score_variant(*x)] for x in variantsList ]
-                scoredVariants.sort(key = lambda x: -x[-1])
-                
-                # Select the first variant if it has a positive score
-                if scoredVariants[0][1] > 0:
-                    pass # selection is done after
-                
-                # Otherwise, select the most central variant
-                else:
-                    """A score of 0 means it is perfectly linked with the previous variant and strictly speaking 
-                    has no benefit to this panel. However, there is a chance that future sampling will reveal a
-                    difference, and hence a central variant choice gives us spread over the chromosome and greater
-                    adherence to our anticipated number of variants in the final panel (as opposed to just skipping
-                    the variant entirely)."""
-                    chunkCentre = (chunkPoints[contig][chunkIndex] + chunkPoints[contig][chunkIndex+1]) / 2
-                    scoredVariants.sort(key = lambda x: abs(chunkCentre - x[0]))
-                
-                chosenPos = scoredVariants[0][0]
-                chosenScore = scoredVariants[0][-1]
-                
-                # Write the selected variant to file
-                chosenVariant = list(vcf.query(contig, (chosenPos, chosenPos)))[0]
-                fileOut.write(str(chosenVariant))
-                
-                # Setup for next iteration and store statistics for later reporting
-                lastVariant = chosenVariant
-                chosenStats.setdefault(contig, [0, 0]) # [numVariants, summedScore]
-                chosenStats[contig][0] += 1
-                chosenStats[contig][1] += chosenScore
-    
-    # Print out some basic statistics
-    numChosen = sum([ x[0] for x in chosenStats.values() ])
-    print(f"# A total of {numChosen} variants were selected. Quick summary of each contig is as follows:")
-    for contig, (numVariants, summedScore) in chosenStats.items():
-        avgScore = round(summedScore / numVariants, 3) # 3 decimals, why not?
-        print(f"# {contig}: {numVariants} variants with avg. score of {avgScore}")
