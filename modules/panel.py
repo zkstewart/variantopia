@@ -140,7 +140,7 @@ def vcf_panel(args):
     # Parallel parsing of VCF with storage of statistics
     chunkVariants = run_vcf_chunk_statistics(args.vcfFile, contigs, chunkPoints, args.variantTypes,
                                              args.biallelicOnly, args.threads)
-
+    
     # Select variants from within each chunk
     vcf = VCFTopia(args.vcfFile)
     chosenStats = {}
@@ -158,14 +158,19 @@ def vcf_panel(args):
                     continue
                 
                 # Calculate linkage between this variant and last chunk's selected variant
-                if lastVariant == None:
-                    variantsList = [ [*x, 0] for x in variantsList ] # [ pos, callrate, mac, linkage ]
-                else:
-                    newVariantsList = []
-                    for i, (pos, callrate, mac) in enumerate(variantsList):
-                        thisVariant = list(vcf.query(contig, (pos, pos)))[0]
-                        newVariantsList.append([pos, callrate, mac, calculate_simple_linkage(thisVariant, lastVariant)])
-                    variantsList = newVariantsList
+                queryVariants = vcf.query(contig, (variantsList[0][0], variantsList[-1][0]))
+                thisVariant = next(queryVariants)
+                for i, (pos, callrate, mac) in enumerate(variantsList):
+                    while pos != thisVariant.POS:
+                        thisVariant = next(queryVariants)
+                    assert pos == thisVariant.POS # sanity check
+                    
+                    if lastVariant == None:
+                        linkage = 0
+                    else:
+                        linkage = calculate_simple_linkage(thisVariant, lastVariant)
+                    
+                    variantsList[i].append(linkage)
                 
                 # Order the variants in this chunk by the scored combination of measured metrics
                 scoredVariants = [ [*x, score_variant(*x)] for x in variantsList ]
