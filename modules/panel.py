@@ -194,7 +194,7 @@ def vcf_panel(args):
                 chosenScore = scoredVariants[0][-1]
                 
                 # Write the selected variant to file
-                chosenVariant = list(vcf.query(contig, (chosenPos, chosenPos)))[0]
+                chosenVariant = [ x for x in vcf.query(contig, (chosenPos, chosenPos)) if x.POS == chosenPos ][0] # search through possible overlaps
                 fileOut.write(str(chosenVariant))
                 
                 # Setup for next iteration and store statistics for later reporting
