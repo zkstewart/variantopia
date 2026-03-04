@@ -127,6 +127,39 @@ def validate_m_report_ps(args):
     '''
     pass # no specific validation needed for 'msa report per_sequence' mode
 
+# pangenome mode
+def validate_pan(args):
+    '''
+    Validation for arguments common to all "pangenome" mode commands.
+    '''
+    # Validate pangenome VCF file
+    args.vcfFile = os.path.abspath(args.vcfFile)
+    if not os.path.isfile(args.vcfFile):
+        raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
+    
+    # Validate output file name
+    args.outputFileName = os.path.abspath(args.outputFileName)
+    if os.path.exists(args.outputFileName):
+        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_pan_plot(args):
+    '''
+    Validation for arguments common to all "pangenome plot" mode commands.
+    '''
+    pass # no specific validation needed for 'pangenome progeny' mode
+
+def validate_pan_plot_het(args):
+    '''
+    Validation for arguments used in "pangenome plot heterozygosity" mode.
+    '''
+    pass # no specific validation needed for 'pangenome plot heterozygosity' mode
+
+def validate_pan_plot_inherit(args):
+    '''
+    Validation for arguments used in "pangenome plot inheritance" mode.
+    '''
+    pass # no specific validation needed for 'pangenome plot inheritance' mode
+
 # vcf mode
 def validate_v(args):
     '''

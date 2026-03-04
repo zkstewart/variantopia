@@ -11,11 +11,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
+    validate_pan, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_reheader, validate_v_stats, validate_v_to, \
     validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
+from modules.pangenome import pan_plot_inherit, pan_plot_het
 from modules.vcf import vcf_stats, vcf_reheader
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
@@ -258,6 +260,64 @@ def main():
                           (variants will be reported in other sequences if they don't encounter that
                           stop codon)""",
                           default=False)
+    
+    # Pangenome subparser
+    panparser = subparsers.add_parser("pangenome",
+                                      parents=[p],
+                                      add_help=False,
+                                      help="Pangenome result analysis")
+    panparser.set_defaults(func=panmain)
+    
+    subPanParsers = panparser.add_subparsers(dest="panMode",
+                                           required=True)
+    
+    # Pangenome > plot subparser
+    panplotparser = subPanParsers.add_parser("plot",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Plot pangenome haplotypes")
+    panplotparser.set_defaults(func=panmain)
+    
+    subPanPlotParsers = panplotparser.add_subparsers(dest="panPlotMode",
+                                                     required=True)
+    
+    # Pangenome > plot > heterozygosity mode
+    panplotheteroparser = subPanPlotParsers.add_parser("heterozygosity",
+                                                       parents=[p],
+                                                       add_help=False,
+                                                       help="Inferences of progeny haplotype inheritance")
+    panplotheteroparser.add_argument("-i", dest="vcfFile",
+                                     required=True,
+                                     help="Location of pangenome VCF file")
+    panplotheteroparser.add_argument("-p", dest="parents",
+                                     required=True,
+                                     nargs=2,
+                                     help="Specify the two parent samples; can be duplicate for selfing")
+    panplotheteroparser.add_argument("-r", dest="reference",
+                                     required=True,
+                                     help="Specify the reference sample")
+    panplotheteroparser.add_argument("-o", dest="outputFileName",
+                                     required=True,
+                                     help="Location to write output file")
+    
+    # Pangenome > plot > inheritance mode
+    panplotinheritparser = subPanPlotParsers.add_parser("inheritance",
+                                                        parents=[p],
+                                                        add_help=False,
+                                                        help="Inferences of progeny haplotype inheritance")
+    panplotinheritparser.add_argument("-i", dest="vcfFile",
+                                      required=True,
+                                      help="Location of pangenome VCF file")
+    panplotinheritparser.add_argument("-p", dest="parents",
+                                      required=True,
+                                      nargs=2,
+                                      help="Specify the two parent samples; can be duplicate for selfing")
+    panplotinheritparser.add_argument("-r", dest="reference",
+                                      required=True,
+                                      help="Specify the reference sample")
+    panplotinheritparser.add_argument("-o", dest="outputFileName",
+                                      required=True,
+                                      help="Location to write output file")
     
     # VCF subparser
     vparser = subparsers.add_parser("vcf",
@@ -587,6 +647,10 @@ def main():
         print("## variantopia.py - VCF file handling ##")
         validate_v(args)
         vmain(args)
+    elif args.mode == "pangenome":
+        print("## variantopia.py - pangenome file handling ##")
+        validate_pan(args)
+        panmain(args)
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
@@ -619,6 +683,19 @@ def mmain(args):
             msa_to_sequence_report(args)
     
     print("MSA analysis complete!")
+
+def panmain(args):
+    # Split into sub-mode-specific functions
+    if args.panMode == "plot":
+        validate_pan_plot(args)
+        if args.panPlotMode == "heterozygosity":
+            print("## Plot of heterozygosity inheritance ##")
+            validate_pan_plot_het(args)
+            pan_plot_het(args)
+        if args.panPlotMode == "inheritance":
+            print("## Plot of haplotype inheritance ##")
+            validate_pan_plot_inherit(args)
+            pan_plot_inherit(args)
 
 def vmain(args):
     # Split into sub-mode-specific functions
