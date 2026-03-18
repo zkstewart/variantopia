@@ -246,13 +246,19 @@ def validate_v_plot(args):
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
-def validate_v_reheader(args):
+def validate_v_relabel(args):
     '''
-    Validation for arguments used by "vcf reheader" mode.
+    Validation for arguments used by "vcf relabel" mode.
     '''
-    # Validate metadata file
-    if not os.path.isfile(args.metadataTsv):
-        raise FileNotFoundError(f"Metadata file (-m {args.metadataTsv}) does not exist!")
+    # Validate logic of behavioural arguments
+    if args.samplesMetadataTsv == None and args.chromosomesMetadataTsv == None:
+        raise ValueError("Must provide either --samples or --chromosomes for this mode to have something to do!")
+    
+    # Validate metadata file(s)
+    if args.samplesMetadataTsv != None and ( not os.path.isfile(args.samplesMetadataTsv) ):
+        raise FileNotFoundError(f"Samples metadata file (--samples {args.samplesMetadataTsv}) does not exist!")
+    if args.chromosomesMetadataTsv != None and ( not os.path.isfile(args.chromosomesMetadataTsv) ):
+        raise FileNotFoundError(f"Chromosomes metadata file (--chromosomes {args.chromosomesMetadataTsv}) does not exist!")
 
 def validate_v_stats(args):
     '''

@@ -3,7 +3,7 @@
 # Classes and functions for parsing VCF files into suitable
 # data structures for variantopia.
 
-import os, sys, shutil, subprocess, warnings
+import os, sys, re, shutil, subprocess, warnings
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
@@ -14,10 +14,31 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, BgzCapableWriter, parse_2col_tsv_as_dict
 
 class VCFTopia:
+    COMMENT_REGEX = re.compile(r"(<|,)(.+?)=(.+?)(,.+?=|>$)") # assumes comma delimiter; some programs embed comments with semicolon delim instead
+    
     def __init__(self, vcfFile):
         self.vcfFile = vcfFile
         self.vcf = VCF(vcfFile)
         self.isVCFTopia = True
+    
+    @staticmethod
+    def comment_as_dict(line):
+        '''
+        Interprets a VCF comment line (starting with '##') as a dictionary of key:value
+        pairs. This function attempts to parse the line in a fashion that is tolerant of
+        potential inclusion of commas in the value fields.
+        '''
+        comment = {}
+        hit = VCFTopia.COMMENT_REGEX.search(line)
+        while hit:
+            startDelim, key, value, endDelim = hit.groups() # first and last value are the delimiters
+            comment[key] = value
+            
+            # Iterate through to next key:value pair
+            start, end = hit.span()
+            pos = end - len(endDelim) # make our next regex search begin at the startDelim
+            hit = VCFTopia.COMMENT_REGEX.search(line, pos)
+        return comment
     
     @staticmethod
     def count_alleles(variant):
@@ -655,15 +676,19 @@ class VCFTopia:
             len(self.chroms)
         )
 
-def vcf_reheader(args):
+def vcf_relabel(args):
     '''
-    Handles "vcf reheader" mode of variantopia.
+    Handles "vcf relabel" mode of variantopia.
     '''
-    metaDict = parse_2col_tsv_as_dict(args.metadataTsv)
+    if args.samplesMetadataTsv != None:
+        sampleDict = parse_2col_tsv_as_dict(args.samplesMetadataTsv)
+    if args.chromosomesMetadataTsv != None:
+        chromosomesDict = parse_2col_tsv_as_dict(args.chromosomesMetadataTsv)
     
-    cleanUp = False
+    warnedChromosomes = set()
     with read_gz_file(args.vcfFile) as fileIn, BgzCapableWriter(args.outputFileName) as fileOut:
         for line in fileIn:
+            # Header handling contingent on --samples
             if line.startswith("#CHROM"):
                 sl = line.rstrip().split("\t")
                 samples = sl[9:]
@@ -671,19 +696,64 @@ def vcf_reheader(args):
                 # Run conversion of oldid to newid based on metadata file
                 newSamples = []
                 for oldid in samples:
-                    if not oldid in metaDict:
-                        if not args.allowNoMatch:
-                            raise ValueError(f"VCF sample '{oldid}' has no match in your metadata file")
-                        else:
-                            print(f"# --allowNoMatch is allowing '{oldid}' to be unchanged in the resulting VCF header")
-                            newSamples.append(oldid)
-                    else:
-                        newSamples.append(metaDict[oldid])
+                    if args.samplesMetadataTsv != None:
+                        if oldid in sampleDict: # replacement is specified
+                            newid = sampleDict[oldid]
+                        elif not args.allowNoSampleMatch: # replacement NOT specified, and not allowed
+                            raise ValueError(f"VCF sample '{oldid}' has no match in your metadata file '{args.samplesMetadataTsv}'")
+                        else: # replacement NOT specified, but is allowed
+                            print(f"# --relaxSamples is allowing '{oldid}' to be unchanged in the resulting VCF header")
+                            newid = oldid
+                        
+                        newSamples.append(newid)
+                    else: # --samples unspecified
+                        newSamples.append(oldid)
                 
                 # Format and write updated line
                 newsl = sl[0:9] + newSamples
                 fileOut.write("\t".join(newsl) + ("\r\n" if line.endswith("\r\n") else "\n"))
+            # Header handling contingent on --chromosomes
+            elif line.startswith("##contig=<ID="):
+                commentDict = VCFTopia.comment_as_dict(line)
+                oldid = commentDict["ID"]
+                
+                if args.chromosomesMetadataTsv != None:
+                    if oldid in chromosomesDict: # replacement is specified
+                        newid = chromosomesDict[oldid]
+                    elif not args.allowNoChromosomeMatch: # replacement NOT specified, and not allowed
+                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your metadata file '{args.chromosomesMetadataTsv}'")
+                    else: # replacement NOT specified, but is allowed
+                        if not oldid in warnedChromosomes:
+                            print(f"# --relaxChromosomes is allowing '{oldid}' to be unchanged in the resulting VCF body")
+                            warnedChromosomes.add(oldid)
+                        newid = oldid
+                    
+                    fileOut.write(line.replace(f"ID={oldid}", f"ID={newid}"))
+                else: # --chromosomes unspecified
+                    fileOut.write(line)
+            # Header lines with no specific handling
+            elif line.startswith("#"):
+                fileOut.write(line)
+            # Body handling contigent on --chromosomes
             else:
+                sl = line.rstrip().split("\t")
+                oldid = sl[0]
+                
+                if args.chromosomesMetadataTsv != None:
+                    if oldid in chromosomesDict: # replacement is specified
+                        sl[0] = chromosomesDict[oldid]
+                    elif not args.allowNoChromosomeMatch: # replacement NOT specified, and not allowed
+                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your metadata file '{args.chromosomesMetadataTsv}'")
+                    else: # replacement NOT specified, but is allowed
+                        if not oldid in warnedChromosomes:
+                            print(f"# --relaxChromosomes is allowing '{oldid}' to be unchanged in the resulting VCF body")
+                            warnedChromosomes.add(oldid)
+                        pass
+                    
+                    line = "\t".join(sl) + ("\r\n" if line.endswith("\r\n") else "\n")
+                else: # --chromosomes unspecified
+                    pass
+                
                 fileOut.write(line)
 
 def vcf_stats(args):

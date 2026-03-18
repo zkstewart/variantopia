@@ -12,13 +12,13 @@ from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
     validate_pan, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
-    validate_v, validate_v_panel, validate_v_plot, validate_v_reheader, validate_v_stats, validate_v_to, \
-    validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
+    validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, \
+    validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_plot_inherit, pan_plot_het
-from modules.vcf import vcf_stats, vcf_reheader
+from modules.vcf import vcf_stats, vcf_relabel
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
@@ -463,28 +463,40 @@ def main():
                              help="""Optionally, specify the output plot height (default=6)""",
                              default=6)
     
-    # VCF > reheader mode
-    vreheaderparser = subVcfParsers.add_parser("reheader",
-                                               parents=[p],
-                                               add_help=False,
-                                               help="Update the samples in the header of a VCF file")
-    vreheaderparser.set_defaults(func=vmain)
-    vreheaderparser.add_argument("-i", dest="vcfFile",
-                                 required=True,
-                                 help="Location of VCF file")
-    vreheaderparser.add_argument("-m", dest="metadataTsv",
-                                 required=True,
-                                 help="Location of metadata file with old:new identifier pairs")
-    vreheaderparser.add_argument("-o", dest="outputFileName",
-                                 required=True,
-                                 help="Location to write statistics output")
-    vreheaderparser.add_argument("--allowNoMatch", dest="allowNoMatch",
-                                 required=False,
-                                 action="store_true",
-                                 help="""Optionally provide this flag if you want to allow samples in the VCF
-                                 header to have no match in the metadata TSV; in practice this lets you rename
-                                 just a subset of samples rather than enforcing complete replacement""",
-                                 default=False)
+    # VCF > relabel mode
+    vrelabelparser = subVcfParsers.add_parser("relabel",
+                                              parents=[p],
+                                              add_help=False,
+                                              help="Update the samples and/or chromosome names of a VCF file")
+    vrelabelparser.set_defaults(func=vmain)
+    vrelabelparser.add_argument("-i", dest="vcfFile",
+                                required=True,
+                                help="Location of VCF file")
+    vrelabelparser.add_argument("-o", dest="outputFileName",
+                                required=True,
+                                help="Location to write relabel VCF output")
+    vrelabelparser.add_argument("--samples", dest="samplesMetadataTsv",
+                                required=False,
+                                help="Location of metadata file with old:new identifier pairs for SAMPLES",
+                                default=None)
+    vrelabelparser.add_argument("--chromosomes", dest="chromosomesMetadataTsv",
+                                required=False,
+                                help="Location of metadata file with old:new identifier pairs for CHROMOSOMES",
+                                default=None)
+    vrelabelparser.add_argument("--relaxSamples", dest="allowNoSampleMatch",
+                                required=False,
+                                action="store_true",
+                                help="""Optionally provide this flag if you want to allow samples in the VCF
+                                header to have no match in the metadata TSV; in practice this lets you rename
+                                just a subset of samples rather than enforcing complete replacement""",
+                                default=False)
+    vrelabelparser.add_argument("--relaxChromosomes", dest="allowNoChromosomeMatch",
+                                required=False,
+                                action="store_true",
+                                help="""Optionally provide this flag if you want to allow chromosomes in the VCF
+                                to have no match in the metadata TSV; in practice this lets you rename
+                                just a subset of chromosomes rather than enforcing complete replacement""",
+                                default=False)
     
     # VCF > stats mode
     vstatsparser = subVcfParsers.add_parser("stats",
@@ -713,10 +725,10 @@ def vmain(args):
         print("## Plot VCF variant information ##")
         validate_v_plot(args)
         vcf_plot(args)
-    if args.vcfMode == "reheader":
-        print("## Update VCF file header ##")
-        validate_v_reheader(args)
-        vcf_reheader(args)
+    if args.vcfMode == "relabel":
+        print("## Update VCF chromosome labels ##")
+        validate_v_relabel(args)
+        vcf_relabel(args)
     if args.vcfMode == "stats":
         print("## Generate VCF file statistics ##")
         validate_v_stats(args)
