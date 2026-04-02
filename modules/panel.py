@@ -10,7 +10,7 @@ import concurrent.futures
 from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from vcf import VCFTopia
+from vcftopia import VCFTopia
 from parsing import read_gz_file, get_chunking_points, BgzCapableWriter
 
 def get_chunk_index_for_this_position(points, position):

@@ -2,7 +2,7 @@ import os, sys, gzip
 from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from vcf import VCFTopia
+from vcftopia import VCFTopia
 from parsing import GzCapableWriter
 
 def vcf_to_cf(args):

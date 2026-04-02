@@ -18,7 +18,7 @@ from modules.validation import validate_m, \
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_plot_inherit, pan_plot_het
-from modules.vcf import vcf_stats, vcf_relabel
+from modules.vcftopia import vcf_stats, vcf_relabel
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from vcf import VCFTopia
+from vcftopia import VCFTopia
 from gff3 import GFF3Topia
 from parsing import read_gz_file
 
