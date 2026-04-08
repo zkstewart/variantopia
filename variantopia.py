@@ -12,13 +12,13 @@ from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
     validate_pan, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
-    validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, \
+    validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
     validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_plot_inherit, pan_plot_het
-from modules.vcftopia import vcf_stats, vcf_relabel
+from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
@@ -425,8 +425,16 @@ def main():
                              type=int,
                              help="""Specify the window size for statistics summarisation;
                              a size of 1 will plot the statistic for each nucleotide position
-                             individually, while larger sizes will summarise the statistic
+                             individually, while larger sizes will aggregate the statistic
                              over that many basepairs in length.""")
+    vplotparser.add_argument("--aggregate", dest="aggregateApproach",
+                             required=False,
+                             choices=["default", "median", "mean", "minimum", "maximum", "sum"],
+                             help="""Optionally, specify how to aggregate statistical values
+                             within each window; default is 'default' which means the
+                             aggregation approach will be selected based on the '-s' statistic;
+                             only relevant if window size (-w) > 1""",
+                             default="default")
     vplotparser.add_argument("--ids", dest="idsToPlot",
                              required=False,
                              nargs="+",
@@ -517,6 +525,27 @@ def main():
                                              add_help=False,
                                              help="Filter VCF data")
     vfilterparser.set_defaults(func=vmain)
+    vfilterparser.add_argument("-i", dest="vcfFile",
+                               required=True,
+                               help="Location of VCF file")
+    vfilterparser.add_argument("-o", dest="outputFileName",
+                               required=True,
+                               help="Location to write filtered VCF output")
+    vfilterparser.add_argument("--gff3", dest="gff3File",
+                               required=False,
+                               help="""Optionally specify the location of a GFF3 file to filter
+                               variants down to those which overlap with the indicated
+                               --feature type""")
+    vfilterparser.add_argument("--feature", dest="featureType",
+                               required=False,
+                               help="""If you specify --gff3, you may optionally indicate which feature
+                               type in the GFF3 should be used for overlap filtration (default='gene')""",
+                               default="gene")
+    vfilterparser.add_argument("--annotarium", dest="annotariumDir",
+                               required=False,
+                               help="""If you specify --gff3, you MUST indicate the location of the
+                               annotarium repository so variantopia can import necessary code""",
+                               default=None)
     
     # VCF > haplotype mode
     vhapparser = subVcfParsers.add_parser("haplotype",
@@ -735,7 +764,8 @@ def vmain(args):
         vcf_stats(args)
     if args.vcfMode == "filter":
         print("## Filter VCF file ##")
-        raise NotImplementedError("'vcf filter' mode not yet implemented")
+        validate_v_filter(args)
+        vcf_filter(args)
     if args.vcfMode == "haplotype":
         print("## VCF haplotype analysis ##")
         raise NotImplementedError("'vcf haplotype' mode not yet implemented")

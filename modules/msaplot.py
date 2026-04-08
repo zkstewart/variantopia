@@ -7,6 +7,7 @@ from pymsaviz import MsaViz
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from msa import MSATopia
 from parsing import parse_metadata_groups
+from annotarium_importers import import_annotarium_domains
 
 class MSAPlot:
     STANDARD_DIMENSION = 5
@@ -543,14 +544,8 @@ def msa_plot_alignment(args):
     
     # Parse the domtblout file (if applicable)
     if args.domtbloutFileName != None:
-        try:
-            sys.path.append(os.path.dirname(args.annotariumDir))
-            global Domains
-            global OverlapResolver
-            from annotarium import Domains, OverlapResolver
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(f"Could not import Domains and OverlapResolver from '{args.annotariumDir}'")
-        
+        global Domains, OverlapResolver
+        Domains, OverlapResolver = import_annotarium_domains(args.annotariumDir)
         plot.parse_domtblout(args.domtbloutFileName)
     
     plot.plot(args.outputDirectory, args.fileFormat, groupDict=groupDict)

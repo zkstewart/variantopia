@@ -2,6 +2,7 @@ import os, sys, importlib
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file
+from annotarium_importers import import_annotarium_gff3, import_annotarium_domains
 
 def parse_text_list(fileName):
     ids = []
@@ -83,7 +84,7 @@ def validate_m_plot_alignment(args):
     if args.domtbloutFileName != None:
         args.domtbloutFileName = os.path.abspath(args.domtbloutFileName)
         if not os.path.isfile(args.domtbloutFileName):
-            raise FileNotFoundError(f"domtblout file (--domtblout {args.domtbloutFileName}) does not exist!")
+            raise FileNotFoundError(f"domtblout file (--domtblout {args.domtbloutFileName}) is not a file or does not exist.")
         
         # Validate annotarium location
         if args.annotariumDir == None:
@@ -95,8 +96,7 @@ def validate_m_plot_alignment(args):
         
         # Validate that necessary modules are discoverable
         try:
-            sys.path.append(os.path.dirname(args.annotariumDir))
-            from annotarium import Domains, OverlapResolver
+            Domains, OverlapResolver = import_annotarium_domains(args.annotariumDir)
         except ModuleNotFoundError:
             raise ModuleNotFoundError(f"Could not import Domains and OverlapResolver from '{args.annotariumDir}'")
     
@@ -192,6 +192,34 @@ def validate_v_cn_plot(args):
     # Validate output file name
     if not args.outputFileName.endswith(".html"):
         raise ValueError(f"Output file (-o {args.outputFileName}) must end in .html for 'copynum plot' mode")
+
+def validate_v_filter(args):
+    '''
+    Validation for arguments used by "vcf filter" mode.
+    '''
+    # Validate optional GFF3 file
+    if args.gff3File != None:
+        args.gff3File = os.path.abspath(args.gff3File)
+        if not os.path.isfile(args.gff3File):
+            raise FileNotFoundError(f"GFF3 file (--gff3 {args.gff3File}) is not a file or does not exist.")
+        
+        # Validate annotarium location
+        if args.annotariumDir == None:
+            raise MissingArgumentError("--annotarium is mandatory since you have specified --gff3")
+        
+        args.annotariumDir = os.path.abspath(args.annotariumDir)
+        if not os.path.isdir(args.annotariumDir):
+            raise FileNotFoundError(f"annotarium location (--annotarium {args.annotariumDir}) is not a directory or does not exist.")
+        
+        # Validate that necessary modules are discoverable
+        try:
+            GFF3Feature, GFF3Tarium = import_annotarium_gff3(args.annotariumDir)
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(f"Could not import GFF3Tarium from '{args.annotariumDir}'")
+    
+    # Validate that a filtering option was provided
+    if not any([args.gff3File != None]): # eventually this any() check can be expanded to include other filter options
+        raise ValueError("--gff3 must be provided or 'vcf filter' has nothing to do!")
 
 def validate_v_plot(args):
     '''

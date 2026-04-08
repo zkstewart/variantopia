@@ -22,6 +22,26 @@ def get_chunk_index_for_this_position(points, position):
 def score_variant(pos, callrate, mac, linkage):
     return callrate * (mac * (1-linkage))
 
+def calculate_rogers_huff_linkage(variant1, variant2):
+    '''
+    Unused function, but maintained here in case of future use.
+    '''
+    import allel
+    def allel_reshape_variant(variant):
+        ploidy = len(variant.genotypes[0]) - 1
+        nsamples = len(variant.genotypes)
+        
+        gt = np.array([ gt[0:2] for gt in variant.genotypes ])
+        gt = gt.reshape((1, nsamples, ploidy))
+        gt = allel.GenotypeArray(gt, dtype='i1')
+        
+        gn = gt.to_n_alt(fill=-1)
+        return gn
+    
+    allel1 = allel_reshape_variant(variant1)
+    allel2 = allel_reshape_variant(variant2)
+    return allel.rogers_huff_r_between(allel1, allel2) ** 2
+
 def calculate_simple_linkage(variant1, variant2):
     '''
     This method was invented (?) by Z.K.S as a simple measure of how often

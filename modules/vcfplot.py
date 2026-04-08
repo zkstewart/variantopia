@@ -7,8 +7,8 @@ from Bio import SeqIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vcftopia import VCFTopia
-from gff3 import GFF3Topia
 from parsing import read_gz_file
+from annotarium_importers import import_annotarium_gff3
 
 class Plot:
     STANDARD_DIMENSION = 5
@@ -33,17 +33,17 @@ class Plot:
     }
     
     @staticmethod
-    def bin_values(values, windowSize, summariseMethod=np.sum):
+    def bin_values(values, windowSize, aggregateMethod=np.sum):
         '''
         Parameters:
             values -- a list of lists containing three values: [position, contigID, statistical value]
             windowSize -- an integer value indicating the size of the windows
-            summariseMethod -- a function to summarise the values within each bin; defaults to np.sum
+            aggregateMethod -- a function to aggregate the values within each bin; defaults to np.sum
                                but can be set to other functions like np.mean, np.median, etc.
         Returns:
             windows -- a numpy array with length equal to the number of windows
                        that the values array divides into, with each window's value
-                       being the result of applying the summariseMethod to the values
+                       being the result of applying the aggregateMethod to the values
                        within that window.
         '''
         # Bin values into their respective windows
@@ -54,9 +54,9 @@ class Plot:
             windowIndex = (i) // windowSize
             windows[windowIndex].append(stat)
         
-        # Apply the summariseMethod to each window
+        # Apply the aggregateMethod to each window
         windows = np.array([
-            summariseMethod(np.array(window)) if window else 0
+            aggregateMethod(np.array(window)) if window else 0
             for window in windows
         ])
         return windows
@@ -72,7 +72,7 @@ class Plot:
             windowSize -- a positive integer indicating the size of the window to use
                           for plotting
             vcf -- a VCFTopia object containing the VCF data to plot
-            gff3 -- a GFF3Topia object or None if no gene models are to be plotted
+            gff3 -- a GFF3Tarium object or None if no gene models are to be plotted
             genomeFile -- a string indicating the path to the genome file in FASTA format
                           or None if no genome information is needed
             width -- an integer indicating the width of the plot in inches; if None,
@@ -178,8 +178,8 @@ class Plot:
             self._gff3 = None
             return
         
-        if not hasattr(value, "isGFF3Topia") or not value.isGFF3Topia:
-            raise TypeError("gff3 must be a GFF3Topia object.")
+        if not hasattr(value, "isGFF3Tarium") or not value.isGFF3Tarium:
+            raise TypeError("gff3 must be a GFF3Tarium object.")
         
         if value.ncls == None:
             value.create_ncls_index(typeToIndex=["gene"])
@@ -219,7 +219,12 @@ class Plot:
             raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .statFunction")
     
     @property
-    def windowFunction(self):
+    def defaultAggregator(self):
+        '''
+        Default method for summarising/aggregating statistics within a windowed region. Other methods
+        can be used instead, but these represent the "standard" which some downstream processes may
+        rely on without needing to think about the choice in detail.
+        '''
         if self.statistic == "snpnumber":
             return np.sum
         elif self.statistic == "mac":
@@ -231,7 +236,7 @@ class Plot:
         elif self.statistic == "het":
             return np.mean
         else:
-            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .windowFunction")
+            raise ValueError(f"self.statistic=='{self.statistic}' is not handled by .defaultAggregator")
     
     @property
     def dtype(self):
@@ -298,6 +303,9 @@ class GenesPlot(Plot):
         '''
         Obtains the relevant structural coordinates of the specified gene.
         
+        The GFF3Tarium class needs to be imported from the annotarium
+        repository or otherwise made available globally.
+        
         Parameters:
             geneID -- a string indicating the gene ID
             structure -- a list of strings indicating the gene structure components
@@ -317,7 +325,7 @@ class GenesPlot(Plot):
             raise ValueError("Cannot include both 'CDS' and 'exon' in structure.")
         
         geneFeature = self.gff3.features[geneID]
-        mrnaFeature = GFF3Topia.longest_isoform(geneFeature)
+        mrnaFeature = GFF3Tarium.longest_feature(geneFeature)
         if "CDS" in structure:
             if not hasattr(mrnaFeature, "CDS"):
                 raise ValueError(f"Gene '{geneID}' longest isoform '{mrnaFeature.ID}' does not have CDS features.")
@@ -357,7 +365,7 @@ class GenesPlot(Plot):
             geneVariants.extend(self.vcf.query(contig, (start, end)))
         return geneVariants
     
-    def get_x_y(self, geneID):
+    def get_x_y(self, geneID, aggregateMethod=None):
         '''
         Returns the x list and y array needed for broken_barh plotting of variant/window
         statistics. Method of operation is dictated by self.statistic.
@@ -367,6 +375,10 @@ class GenesPlot(Plot):
         
         Parameters:
             geneID -- a string indicating the gene ID
+            aggregateMethod -- an np function capable of assessing an array and returning
+                               a float output summarising/aggregating the window; OR
+                               None to have this automatically selected based on the default
+                               behaviour
         Returns:
             x -- a list containing tuples of (x, 1) where x is the position index
                  and 1 is the length of the position as needed by broken_barh
@@ -389,14 +401,15 @@ class GenesPlot(Plot):
         
         # Bin the y values to the specified window size
         if self.windowSize > 1:
-            y = Plot.bin_values(y, self.windowSize, summariseMethod=self.windowFunction)
+            y = Plot.bin_values(y, self.windowSize, aggregateMethod=self.defaultAggregator if aggregateMethod == None
+                                                                    else aggregateMethod)
         
         # Create the x array
         x = [ (i, 1) for i in np.arange(0, len(y)) ]
         
         return x, y
     
-    def plot(self, outputFileName, idsToPlot=None, typesToPlot=["gene"]):
+    def plot(self, outputFileName, idsToPlot=None, typesToPlot=["gene"], aggregateApproach="default"):
         '''
         Plots the specified .statistic for all genes in the GFF3 file (if 
         idsToPlot is None) or just for the indicated idsToPlot.
@@ -409,6 +422,13 @@ class GenesPlot(Plot):
                          be plotted; OR None to plot every feature in self.gff3.ftypes
             typesToPlot -- a list of strings, corresponding to feature types indexed
                            in self.gff3.ftypes, which are to be presented herein.
+            aggregateApproach -- a string indicating which of several possible options should
+                                 be used as the aggregation approach. This string is expected
+                                 to be in the list:
+                                 ["default", "median", "mean", "minimum", "maximum", "sum"]
+                                 Where "default" will result in self.defaultAggregator being
+                                 called and all other options will invoke their corresponding
+                                 numpy function.
         '''
         SPACING = 0.1
         
@@ -416,10 +436,26 @@ class GenesPlot(Plot):
         if idsToPlot == None:
             idsToPlot = [ f.ID for ftype in typesToPlot for f in self.gff3.ftypes[ftype] ]
         
+        # Get aggregation method
+        if aggregateApproach == "default":
+            aggregateMethod = self.defaultAggregator
+        elif aggregateApproach == "median":
+            aggregateMethod = np.median
+        elif aggregateApproach == "mean":
+            aggregateMethod = np.mean
+        elif aggregateApproach == "minimum":
+            aggregateMethod = np.min
+        elif aggregateApproach == "maximum":
+            aggregateMethod = np.max
+        elif aggregateApproach == "sum":
+            aggregateMethod = np.sum
+        else:
+            raise ValueError(f"aggregateApproach '{aggregateApproach}' not recognised by GenesPlot.plot()")
+        
         # Obtain data for plotting
         geneArrays = [] # contains [[x1, y1], [x2, y2], ...]
         for geneID in idsToPlot:
-            geneArrays.append(self.get_x_y(geneID))
+            geneArrays.append(self.get_x_y(geneID, aggregateMethod=aggregateMethod))
         
         # Sort data from longest to shortest
         geneArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
@@ -510,7 +546,7 @@ class ChromosomesPlot(Plot):
             geneVariants.extend(self.vcf.query(contig, (start, end)))
         return geneVariants
     
-    def get_x_y(self, contig):
+    def get_x_y(self, contig, aggregateMethod=None):
         '''
         Returns the x list and y array needed for broken_barh plotting of variant/window
         statistics. Method of operation is dictated by self.statistic.
@@ -520,6 +556,10 @@ class ChromosomesPlot(Plot):
         
         Parameters:
             contig -- a string indicating the chromosome/contig ID
+            aggregateMethod -- an np function capable of assessing an array and returning
+                               a float output summarising/aggregating the window; OR
+                               None to have this automatically selected based on the default
+                               behaviour
         Returns:
             x -- a list containing tuples of (x, 1) where x is the position index
                  and 1 is the length of the position as needed by broken_barh
@@ -542,14 +582,15 @@ class ChromosomesPlot(Plot):
         
         # Bin the y values to the specified window size
         if self.windowSize > 1:
-            y = Plot.bin_values(y, self.windowSize, summariseMethod=self.windowFunction)
+            y = Plot.bin_values(y, self.windowSize, aggregateMethod=self.defaultAggregator if aggregateMethod == None
+                                                                    else aggregateMethod)
         
         # Create the x array
         x = [ (i, 1) for i in np.arange(0, len(y)) ]
         
         return x, y
     
-    def plot(self, outputFileName, idsToPlot=None):
+    def plot(self, outputFileName, idsToPlot=None, aggregateApproach="default"):
         '''
         Plots the specified .statistic for all contigs in the genome file (if 
         idsToPlot is None) or just for the indicated idsToPlot.
@@ -560,6 +601,13 @@ class ChromosomesPlot(Plot):
                               and to have a valid filename suffix to control the file format
             idsToPlot -- a list of strings, corresponding to chromosomes/contigs that should
                          be plotted; OR None to plot every contig indexed by self.genomeLengths
+            aggregateApproach -- a string indicating which of several possible options should
+                                 be used as the aggregation approach. This string is expected
+                                 to be in the list:
+                                 ["default", "median", "mean", "minimum", "maximum", "sum"]
+                                 Where "default" will result in self.defaultAggregator being
+                                 called and all other options will invoke their corresponding
+                                 numpy function.
         '''
         SPACING = 0.1
         
@@ -567,10 +615,26 @@ class ChromosomesPlot(Plot):
         if idsToPlot == None:
             idsToPlot = [ contig for contig in self.genomeLengths.keys() ]
         
+        # Get aggregation method
+        if aggregateApproach == "default":
+            aggregateMethod = self.defaultAggregator
+        elif aggregateApproach == "median":
+            aggregateMethod = np.median
+        elif aggregateApproach == "mean":
+            aggregateMethod = np.mean
+        elif aggregateApproach == "minimum":
+            aggregateMethod = np.min
+        elif aggregateApproach == "maximum":
+            aggregateMethod = np.max
+        elif aggregateApproach == "sum":
+            aggregateMethod = np.sum
+        else:
+            raise ValueError(f"aggregateApproach '{aggregateApproach}' not recognised by ChromosomesPlot.plot()")
+        
         # Obtain data for plotting
         contigArrays = [] # contains [[x1, y1], [x2, y2], ...]
         for contigID in idsToPlot:
-            contigArrays.append(self.get_x_y(contigID))
+            contigArrays.append(self.get_x_y(contigID, aggregateMethod=aggregateMethod))
         
         # Sort data from longest to shortest
         contigArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
@@ -611,7 +675,7 @@ class ChromosomesPlot(Plot):
             if self.gff3 != None:
                 geneFeatures = self.gff3.ncls_finder(0, self.genomeLengths[contigID], "contig", contigID)
                 mrnaFeatures = [
-                    GFF3Topia.longest_isoform(geneFeature)
+                    GFF3Tarium.longest_feature(geneFeature)
                     for geneFeature in geneFeatures
                     if hasattr(geneFeature, "mRNA")
                 ]
@@ -648,7 +712,9 @@ def vcf_plot(args):
     # Load VCF and GFF3 files
     vcf = VCFTopia(args.vcfFile)
     if args.gff3File != None:
-        gff3 = GFF3Topia(args.gff3File)
+        global GFF3Feature, GFF3Tarium
+        GFF3Feature, GFF3Tarium = import_annotarium_gff3(args.annotariumDir)
+        gff3 = GFF3Tarium(args.gff3File)
         gff3.create_ncls_index(["gene"])
     else:
         gff3 = None
@@ -657,16 +723,19 @@ def vcf_plot(args):
     if args.feature == "genes":
         print("## gene statistic genegrams ##")
         plot = GenesPlot(args.statistic, args.feature, args.windowSize,
-                         vcf, gff3, args.genomeFile,
-                         args.width, args.height
+                         vcf, gff3,
+                         genomeFile=args.genomeFile,
+                         width=args.width, height=args.height
         )
     elif args.feature == "chromosomes":
         print("## chromosome statistic ideograms ##")
         plot = ChromosomesPlot(args.statistic, args.feature, args.windowSize,
-                               vcf, gff3, args.genomeFile,
-                               args.width, args.height
+                               vcf, gff3=gff3,
+                               genomeFile=args.genomeFile,
+                               width=args.width, height=args.height
         )
     
     # Generate plot
     plot.colourMap = args.colourMap
-    plot.plot(args.outputFileName, idsToPlot=args.ids)
+    plot.plot(args.outputFileName, idsToPlot=args.ids,
+              aggregateApproach=args.aggregateApproach)
