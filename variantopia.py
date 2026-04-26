@@ -1,9 +1,21 @@
-#! python3
-# variantopia.py
-# Front-end interface for variant analysis tools
-# that have been developed over several years in the
-# Various_scripts Z.K.S repository, but which need
-# to be consolidated and made more user-friendly.
+#!/usr/bin/env python3
+
+# variantopia.py provides an interace to several tools intended to
+# work with variants in VCF or MSA or any other relevant file format.
+# Copyright (C) 2026 Zachary Kenneth Stewart
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os, argparse, sys
 

@@ -1,9 +1,19 @@
-#! python3
-# vcftopia.py
-# Classes and functions for parsing VCF files into suitable
-# data structures for variantopia.
+# Copyright (C) 2026 Zachary Kenneth Stewart
 
-import os, sys, re, shutil, subprocess, warnings
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import os, sys, re, shutil, warnings
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
@@ -12,6 +22,7 @@ from copy import deepcopy
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, BgzCapableWriter, parse_2col_tsv_as_dict
+from subprocess_runners import run_tabix, run_bcftools_index
 
 class VCFTopia:
     COMMENT_REGEX = re.compile(r"(<|,)(.+?)=(.+?)(,.+?=|>$)") # assumes comma delimiter; some programs embed comments with semicolon delim instead
@@ -376,21 +387,7 @@ class VCFTopia:
             raise FileNotFoundError(f"tabix executable not found at '{tabixExe}'")
         
         # Run tabix to index the VCF file
-        cmd = [tabixExe, "-f", "-p", "vcf", self.vcfFile]
-        run_tabix = subprocess.Popen(" ".join(cmd), shell = True,
-                                    stdout = subprocess.PIPE,
-                                    stderr = subprocess.PIPE)
-        tabixout, tabixerr = run_tabix.communicate()
-        
-        # Check that tabix ran successfully
-        if tabixout.decode("utf-8") != "":
-            raise Exception(("tabix stdout is not empty as expected, indicating a probable error. " +
-                            f'Please check the stdout ({tabixout.decode("utf-8")}) and stderr ' + 
-                            f'({tabixerr.decode("utf-8")}) to make sense of this.'))
-        elif tabixerr.decode("utf-8") != "":
-            raise Exception(("tabix encountered an error; have a look " +
-                            f'at the stdout ({tabixout.decode("utf-8")}) and stderr ' + 
-                            f'({tabixerr.decode("utf-8")}) to make sense of this.'))
+        run_tabix(self.vcfFile, tabixExe=tabixExe)
         print(f"# Indexed '{self.vcfFile}' with tabix")
     
     def bcftools_index(self, bcftoolsExe):
@@ -398,31 +395,16 @@ class VCFTopia:
         Create an index for the VCF file using the bcftools executable.
         
         Parameters:
-            bcftoolsExe -- path to the tabix executable
+            bcftoolsExe -- path to the bcftools executable
         '''
-        #BAD_WORDS = ["failed", "error", "warning", "abort", "exception", "fatal", "fail", "unrecogni"]
         if not self.is_bgzipped:
             raise ValueError(f"Cannot index VCF file '{self.vcfFile}' since it is not bgzipped. " +
                              "Please bgzip the file before using it with variantopia.")
         if not os.path.exists(bcftoolsExe):
             raise FileNotFoundError(f"bcftools executable not found at '{bcftoolsExe}'")
         
-        # Run tabix to index the VCF file
-        cmd = [bcftoolsExe, "index", self.vcfFile]
-        run_index = subprocess.Popen(" ".join(cmd), shell = True,
-                                    stdout = subprocess.PIPE,
-                                    stderr = subprocess.PIPE)
-        indexout, indexerr = run_index.communicate()
-        
-        # Check that bcftools index ran successfully
-        if indexout.decode("utf-8") != "":
-            raise Exception(("bcftools index stdout is not empty as expected, indicating a probable error. " +
-                            f'Please check the stdout ({indexout.decode("utf-8")}) and stderr ' + 
-                            f'({indexerr.decode("utf-8")}) to make sense of this.'))
-        elif indexerr.decode("utf-8") != "":
-            raise Exception(("bcftools index encountered an error; have a look " +
-                            f'at the stdout ({indexout.decode("utf-8")}) and stderr ' + 
-                            f'({indexerr.decode("utf-8")}) to make sense of this.'))
+        # Run bcftools to index the VCF file
+        run_bcftools_index(self.vcfFile, bcftoolsExe=bcftoolsExe)
         print(f"# Indexed '{self.vcfFile}' with bcftools index")
     
     def query(self, chrom, startEnd=None):
