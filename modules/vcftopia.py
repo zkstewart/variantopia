@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os, sys, re, shutil, warnings
+import concurrent.futures
 import numpy as np
 import pandas as pd
 from cyvcf2 import VCF
@@ -23,6 +24,7 @@ from copy import deepcopy
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, BgzCapableWriter, parse_2col_tsv_as_dict
 from subprocess_runners import run_tabix, run_bcftools_index
+from streaming_statistics import OnlineMean, Remedian, merge_online_means, merge_remedians
 
 class VCFTopia:
     COMMENT_REGEX = re.compile(r"(<|,)(.+?)=(.+?)(,.+?=|>$)") # assumes comma delimiter; some programs embed comments with semicolon delim instead
@@ -510,7 +512,70 @@ class VCFTopia:
             }
         return vcfDict
     
-    def comprehensive_statistics(self):
+    @staticmethod
+    def _statistics_task_handler(vcfFile, contigID):
+        contigDefault = {"num_variants": 0, "num_multiallelic": 0, "num_biallelic": 0,
+                         "num_insertions": 0, "num_deletions": 0,
+                         "num_snps": 0, "num_mnps": 0}
+        sampleDefault = {"num_called": 0, "num_uncalled": 0,
+                         "num_hom": 0, "num_het": 0,
+                         "DP_mean": OnlineMean(), "AD_mean": OnlineMean(),
+                         "DP_median": Remedian(), "AD_median": Remedian()}
+        
+        vcf = VCFTopia(vcfFile)
+        contigStats = { contigID: deepcopy(contigDefault) }
+        sampleStats = { s: deepcopy(sampleDefault) for s in vcf.samples }
+        
+        for variant in vcf.query(contigID):
+            # Store contig-level stats
+            contigStats[contigID]["num_variants"] += 1
+            
+            if len(variant.ALT) == 1:
+                contigStats[contigID]["num_biallelic"] += 1
+            else:
+                contigStats[contigID]["num_multiallelic"] += 1
+            
+            if any([ len(alt) > len(variant.REF) for alt in variant.ALT ]):
+                contigStats[contigID]["num_insertions"] += 1
+            if any([ len(alt) < len(variant.REF) for alt in variant.ALT ]):
+                contigStats[contigID]["num_deletions"] += 1
+            
+            if len(variant.REF) == 1:
+                contigStats[contigID]["num_snps"] += 1
+            else:
+                contigStats[contigID]["num_mnps"] += 1
+            
+            # Store sample-level stats
+            hasDP = False
+            if "DP" in variant.FORMAT:
+                hasDP = True
+                sampleDP = VCFTopia.sample_format_field(vcf.samples, variant, "DP")
+            hasAD = False
+            if "AD" in variant.FORMAT:
+                hasAD = True
+                sampleAD = VCFTopia.sample_format_field(vcf.samples, variant, "AD")
+            
+            sampleIntegers = VCFTopia.sample_integers(vcf.samples, variant)
+            for sample, integerList in sampleIntegers.items():                
+                if not -1 in integerList:
+                    sampleStats[sample]["num_called"] += 1
+                    if len(set(integerList)) == 1:
+                        sampleStats[sample]["num_hom"] += 1
+                    else:
+                        sampleStats[sample]["num_het"] += 1
+                    
+                    if hasDP:
+                        sampleStats[sample]["DP_mean"] + sum(sampleDP[sample])
+                        sampleStats[sample]["DP_median"] + sum(sampleDP[sample])
+                    if hasAD:
+                        sampleStats[sample]["AD_mean"] + sum(sampleAD[sample])
+                        sampleStats[sample]["AD_median"] + sum(sampleAD[sample])
+                else:
+                    sampleStats[sample]["num_uncalled"] += 1
+        
+        return contigStats, sampleStats
+    
+    def comprehensive_statistics(self, threads=1):
         '''
         Calculates and tallies all potentially relevant statistics on the
         composition of this VCF file.
@@ -532,105 +597,61 @@ class VCFTopia:
                              and columns correspond to integer or float values of different
                              variant statistics
         '''
-        contigDefault = {"num_variants": 0, "num_multiallelic": 0, "num_biallelic": 0,
-                         "num_insertions": 0, "num_deletions": 0,
-                         "num_snps": 0, "num_mnps": 0}
-        sampleDefault = {"num_called": 0, "num_uncalled": 0,
-                         "num_hom": 0, "num_het": 0,
-                         "DP": [], "AD": []} # lists require dict to be deepcopied later
+        # Obtain statistics for each contig
+        futures = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
+            for contigID in self.contigs:
+                futures.append(
+                    executor.submit(VCFTopia._statistics_task_handler, self.vcfFile, contigID)
+                )
         
-        contigStats = {}
-        sampleStats = {}
-        for variant in self:
-            # Store contig-level stats
-            contigStats.setdefault(variant.CHROM, deepcopy(contigDefault))
-            contigStats[variant.CHROM]["num_variants"] += 1
-            
-            if len(variant.ALT) == 1:
-                contigStats[variant.CHROM]["num_biallelic"] += 1
-            else:
-                contigStats[variant.CHROM]["num_multiallelic"] += 1
-            
-            if any([ len(alt) > len(variant.REF) for alt in variant.ALT ]):
-                contigStats[variant.CHROM]["num_insertions"] += 1
-            if any([ len(alt) < len(variant.REF) for alt in variant.ALT ]):
-                contigStats[variant.CHROM]["num_deletions"] += 1
-            
-            if len(variant.REF) == 1:
-                contigStats[variant.CHROM]["num_snps"] += 1
-            else:
-                contigStats[variant.CHROM]["num_mnps"] += 1
-            
-            # Store sample-level stats
-            hasDP = False
-            if "DP" in variant.FORMAT:
-                hasDP = True
-                sampleDP = VCFTopia.sample_format_field(self.samples, variant, "DP")
-            hasAD = False
-            if "AD" in variant.FORMAT:
-                hasAD = True
-                sampleAD = VCFTopia.sample_format_field(self.samples, variant, "AD")
-            
-            sampleIntegers = VCFTopia.sample_integers(self.samples, variant)
-            for sample, integerList in sampleIntegers.items():
-                sampleStats.setdefault(sample, deepcopy(sampleDefault))
-                
-                if not -1 in integerList:
-                    sampleStats[sample]["num_called"] += 1
-                    if len(set(integerList)) == 1:
-                        sampleStats[sample]["num_hom"] += 1
-                    else:
-                        sampleStats[sample]["num_het"] += 1
-                    
-                    if hasDP:
-                        sampleStats[sample]["DP"].append(sum(sampleDP[sample])) # needs testing
-                    if hasAD:
-                        sampleStats[sample]["AD"].append(sum(sampleAD[sample]))
-                else:
-                    sampleStats[sample]["num_uncalled"] += 1
+        # Gather the output results from each contig
+        genomeStats = {}
+        overallSampleStats = {}
         
-        # Average sample-level statistics arrays
-        for sample, statsDict in sampleStats.items():
-            statsDict["DP"] = np.array(statsDict["DP"])
-            statsDict["AD"] = np.array(statsDict["AD"])
-            
-            # Median and mean for DP
-            if len(statsDict["DP"]) != 0:
-                statsDict["DP_median"] = np.median(statsDict["DP"])
-                statsDict["DP_mean"] = np.mean(statsDict["DP"])
+        hasDP = False
+        dpMean = { s: [] for s in self.samples }
+        dpMedian = { s: [] for s in self.samples }
+        
+        hasAD = False
+        adMean = { s: [] for s in self.samples }
+        adMedian = { s: [] for s in self.samples }
+        
+        for f in futures:
+            contigStats, sampleStats = f.result() # raises Exceptions if any occurred
+            genomeStats.update(contigStats)
+                        
+            if overallSampleStats == {}:
+                overallSampleStats = sampleStats
             else:
-                statsDict["DP_median"] = None
-                statsDict["DP_mean"] = None
-            
-            # Median and mean for AD
-            if len(statsDict["AD"]) != 0:
-                statsDict["AD_median"] = np.median(statsDict["AD"])
-                statsDict["AD_mean"] = np.mean(statsDict["AD"])
-            else:
-                statsDict["AD_median"] = None
-                statsDict["AD_mean"] = None
-            
-            # Calculate DP-AD value (useful for ploidy change inference)
-            if len(statsDict["DP"]) != 0 and len(statsDict["AD"]) != 0:
-                if len(statsDict["DP"]) == len(statsDict["AD"]):
-                    dpMinusAd = statsDict["DP"] - statsDict["AD"]
-                    statsDict["DP-AD_median"] = np.median(dpMinusAd)
-                    statsDict["DP-AD_mean"] = np.mean(dpMinusAd)
-                else:
-                    print("WARNING: Inconsistency between count of 'DP' and 'AD' values; cannot calculate DP-AD statistic")
-                    statsDict["DP-AD_median"] = None
-                    statsDict["DP-AD_mean"] = None
-            else:
-                statsDict["DP-AD_median"] = None
-                statsDict["DP-AD_mean"] = None
-            
-            # Wipe AP and DP before later pandas dataframe conversion
-            del statsDict["DP"]
-            del statsDict["AD"]
+                for sampleID, sampleDict in sampleStats.items():
+                    for key, value in sampleDict.items():
+                        if key.startswith("num_"):
+                            overallSampleStats[sampleID][key] += value
+                        elif key == "DP_mean":
+                            dpMean[sampleID].append(value)
+                            hasDP = True
+                        elif key == "AD_mean":
+                            adMean[sampleID].append(value)
+                            hasAD = True
+                        elif key == "DP_median":
+                            dpMedian[sampleID].append(value)
+                        elif key == "AD_median":
+                            adMedian[sampleID].append(value)
+        
+        # Flatten sample-level statistics down to a float and not the streaming statistics objects
+        if hasAD:
+            for sampleID, sampleDict in overallSampleStats.items():
+                sampleDict["AD_mean"] = merge_online_means(adMean[sampleID])
+                sampleDict["AD_median"] = merge_remedians(adMedian[sampleID])
+        if hasDP:
+            for sampleID, sampleDict in overallSampleStats.items():
+                sampleDict["DP_mean"] = merge_online_means(dpMean[sampleID])
+                sampleDict["DP_median"] = merge_remedians(dpMedian[sampleID])
         
         # Format pandas dataframes for statistics
-        genomeStatsDF = pd.DataFrame.from_dict(contigStats, orient="index")
-        sampleStatDF = pd.DataFrame.from_dict(sampleStats, orient="index")
+        genomeStatsDF = pd.DataFrame.from_dict(genomeStats, orient="index")
+        sampleStatDF = pd.DataFrame.from_dict(overallSampleStats, orient="index")
         
         # Add totals row for genome statistics
         genomeStatsDF.loc["Total"] = genomeStatsDF.sum()

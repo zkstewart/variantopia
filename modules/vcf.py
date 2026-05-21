@@ -105,7 +105,7 @@ def vcf_stats(args):
     Handles "vcf stats" mode of variantopia.
     '''
     vcf = VCFTopia(args.vcfFile)
-    genomeStatsDF, sampleStatDF = vcf.comprehensive_statistics()
+    genomeStatsDF, sampleStatDF = vcf.comprehensive_statistics(threads=args.threads)
     with open(args.outputFileName, "w") as fileOut:
         fileOut.write("# genome-level statistics\n")
         genomeStatsDF.to_csv(fileOut, sep="\t", na_rep=".")

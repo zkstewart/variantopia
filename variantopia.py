@@ -530,6 +530,12 @@ def main():
     vstatsparser.add_argument("-o", dest="outputFileName",
                               required=True,
                               help="Location to write statistics output")
+    vstatsparser.add_argument("--threads", dest="threads",
+                              required=False,
+                              type=int,
+                              help="""Optionally, specify the number of threads to use with parallelisable
+                              tasks; default == 1""",
+                              default=1)
     
     # VCF > filter mode
     vfilterparser = subVcfParsers.add_parser("filter",
