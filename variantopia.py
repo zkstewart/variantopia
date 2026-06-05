@@ -444,8 +444,8 @@ def main():
                              choices=["default", "median", "mean", "minimum", "maximum", "sum"],
                              help="""Optionally, specify how to aggregate statistical values
                              within each window; default is 'default' which means the
-                             aggregation approach will be selected based on the '-s' statistic;
-                             only relevant if window size (-w) > 1""",
+                             aggregation approach will be selected automatically based on the
+                             '-s' statistic; only relevant if window size (-w) > 1""",
                              default="default")
     vplotparser.add_argument("--ids", dest="idsToPlot",
                              required=False,
@@ -482,6 +482,11 @@ def main():
                              required=False,
                              help="""Optionally, specify the output plot height (default=6)""",
                              default=6)
+    vplotparser.add_argument("--annotarium", dest="annotariumDir",
+                             required=False,
+                             help="""If you specify --gff3, you MUST indicate the location of the
+                             annotarium repository so variantopia can import necessary code""",
+                             default=None)
     
     # VCF > relabel mode
     vrelabelparser = subVcfParsers.add_parser("relabel",

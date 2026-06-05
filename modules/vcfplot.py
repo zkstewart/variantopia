@@ -630,6 +630,9 @@ class ChromosomesPlot(Plot):
         if idsToPlot == None:
             idsToPlot = [ contig for contig in self.genomeLengths.keys() ]
         
+        # Sort contigs by length
+        idsToPlot.sort(key = lambda x: self.genomeLengths[x])
+        
         # Get aggregation method
         if aggregateApproach == "default":
             aggregateMethod = self.defaultAggregator
@@ -650,9 +653,6 @@ class ChromosomesPlot(Plot):
         contigArrays = [] # contains [[x1, y1], [x2, y2], ...]
         for contigID in idsToPlot:
             contigArrays.append(self.get_x_y(contigID, aggregateMethod=aggregateMethod))
-        
-        # Sort data from longest to shortest
-        contigArrays.sort(key = lambda x: len(x[0])) # [x1,y1] each have same length
         
         # Obtain the minimum and maximum values being plotted
         minValue, maxValue, maxLen = np.inf, -np.inf, -np.inf

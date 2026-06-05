@@ -249,6 +249,20 @@ def validate_v_plot(args):
         args.gff3File = os.path.abspath(args.gff3File)
         if not os.path.isfile(args.gff3File):
             raise FileNotFoundError(f"GFF3 file (--gff3 {args.gff3File}) does not exist!")
+        
+        # Validate annotarium location
+        if args.annotariumDir == None:
+            raise MissingArgumentError("--annotarium is mandatory since you have specified --gff3")
+        
+        args.annotariumDir = os.path.abspath(args.annotariumDir)
+        if not os.path.isdir(args.annotariumDir):
+            raise FileNotFoundError(f"annotarium location (--annotarium {args.annotariumDir}) is not a directory or does not exist.")
+        
+        # Validate that necessary modules are discoverable
+        try:
+            GFF3Feature, GFF3Tarium = import_annotarium_gff3(args.annotariumDir)
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(f"Could not import GFF3Tarium from '{args.annotariumDir}'")
     
     if args.feature == "chromosomes" and args.genomeFile == None:
         raise ValueError("'-f chromosomes' necessitates that --genome be provided.")
