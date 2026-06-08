@@ -629,9 +629,9 @@ class ChromosomesPlot(Plot):
         # Get contig ids for plotting
         if idsToPlot == None:
             idsToPlot = [ contig for contig in self.genomeLengths.keys() ]
-        
-        # Sort contigs by length
-        idsToPlot.sort(key = lambda x: self.genomeLengths[x])
+            idsToPlot.sort(key = lambda x: self.genomeLengths[x]) # sort contigs by length
+        else:
+            idsToPlot = list(reversed(idsToPlot)) # first ID specified on CLI will be at the top of the plot
         
         # Get aggregation method
         if aggregateApproach == "default":
