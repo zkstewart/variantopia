@@ -19,6 +19,7 @@ import numpy as np
 import scipy.spatial.distance as ssd
 from Bio import SeqIO
 from scipy.cluster import hierarchy
+from collections import Counter
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, GzCapableWriter
@@ -258,6 +259,11 @@ class MSATopia:
             yield rowSeries
     
     @property
+    def seqs(self):
+        for row in self.rows:
+            yield "".join(row.to_list())
+    
+    @property
     def colNames(self):
         return self.df.columns.tolist()
     
@@ -357,6 +363,33 @@ class MSATopia:
         
         # Reorder the underlying msa DataFrame
         self.df = self.df.loc[sequencesSorted]
+    
+    def generate_consensus(self, asCodons=False):
+        '''
+        This method produces a very basic consensus sequence through a voting mechanism
+        whereby the most common nucleotide/amino acid will be the representative. This
+        might not be biologically valid, but it provides a metric by which human investigations
+        can occur especially via calculation of variable site statistics.
+        
+        Parameters:
+            asCodons -- a Boolean indicating whether the consensus should be generated
+                        as codons. This is only relevant if the sequences are nucleotides.
+        
+        Method sets self.consensus, but also returns:
+            consensus -- A string of the consensus sequence including gaps
+        '''
+        seqs = list(self.seqs)
+        
+        consensus = ""
+        stepSize = 3 if asCodons else 1
+        for i in range(0, self.ncol, stepSize):
+            positionList = []
+            for seq in seqs:
+                positionList.append(seq[i:i+stepSize])
+            positionCount = Counter(positionList)
+            consensus += positionCount.most_common(1)[0][0] # most_common(1) gives a list with (residue, count) tuple
+        
+        return consensus
     
     def write(self, outputFileName):
         '''
