@@ -89,10 +89,11 @@ class BgzCapableWriter:
         if exc_type is not None:
             raise exc_type(exc_val).with_traceback(exc_tb)
         else:
-            if shutil.which("bcftools"):
-                run_bcftools_index(self.filename)
-            elif shutil.which("tabix"):
-                run_tabix(self.filename)
+            if self.filename.endswith(".gz"):
+                if shutil.which("bcftools"):
+                    run_bcftools_index(self.filename)
+                elif shutil.which("tabix"):
+                    run_tabix(self.filename)
 
 def parse_metadata_groups(metadataGroupsFile):
     ACCEPTED_GROUPS = ["0", "1", "2"]
