@@ -322,6 +322,10 @@ class VCFTopia:
         return None
     
     @property
+    def header(self):
+        return self.vcf.raw_header
+    
+    @property
     def is_bgzipped(self):
         '''
         Check if the VCF file is bgzipped.
