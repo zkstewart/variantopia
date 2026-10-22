@@ -51,6 +51,8 @@ variantopia is written in Python and requires a modern version 3. It makes use o
 - cyvcf2 (https://github.com/brentp/cyvcf2)
 - ncls (https://pypi.org/project/ncls)
 - plotly (https://plotly.com/python/)
+- pyCirclize (https://github.com/moshi4/pyCirclize)
+- pyMSAviz (https://github.com/moshi4/pyMSAviz)
 
 It also calls upon the external programs **tabix** and **bcftools** (https://www.htslib.org)
 
