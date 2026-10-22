@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, sys
+import os, sys, math
 import numpy as np
 import matplotlib.pyplot as plt
 from itertools import combinations
@@ -360,6 +360,327 @@ def pan_plot_inherit(args):
     # Show the colour scale legend and save
     fig.legend(loc="center left", bbox_to_anchor=(1, 0.5), ncol=1)
     fig.savefig(args.outputFileName, dpi=300, bbox_inches="tight")
+
+# Painting states are indexed as 2*i + j where i is the parent 1 haplotype
+# and j is the parent 2 haplotype inherited by the offspring
+PAINT_P1_HAP = np.array([0, 0, 1, 1])
+PAINT_P2_HAP = np.array([0, 1, 0, 1])
+
+def paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, offspringIndices, minGQ):
+    '''
+    Parses the variants of a contig into arrays suitable for haplotype painting. Only sites
+    where both parents are fully genotyped and at least one parent is heterozygous are retained.
+    
+    Parameters:
+        vcf -- a VCFTopia object
+        contig -- a string indicating the contig to parse
+        p1Index / p2Index -- integer indices of the parent samples
+        referenceIndex -- integer index of the reference (haploid column) parent sample
+        offspringIndices -- a list of integer indices of the offspring samples
+        minGQ -- an integer indicating the minimum GQ for an offspring genotype to be used
+    Returns:
+        positions -- a numpy array of shape (nSites,) with variant positions
+        parentGTs -- a numpy array of shape (nSites, 4) with the alleles of parent 1
+                     haplotypes 1 and 2, followed by parent 2 haplotypes 1 and 2
+        offspringGTs -- a numpy array of shape (nSites, nOffspring, 2) with each offspring's
+                        alleles sorted in ascending order, and -1 indicating a missing
+                        or filtered genotype
+    '''
+    positions, parentGTs, offspringGTs = [], [], []
+    for variant in vcf.query(contig):
+        as_pangenome_variant(variant, referenceIndex)
+        genotypes = variant.genotypes
+        
+        # Skip sites where parents are not fully genotyped
+        p1GT = genotypes[p1Index][:-1] # drop the phased boolean
+        p2GT = genotypes[p2Index][:-1]
+        if len(p1GT) != 2 or len(p2GT) != 2 or -1 in p1GT or -1 in p2GT:
+            continue
+        
+        # Skip sites which cannot inform haplotype inheritance
+        if p1GT[0] == p1GT[1] and p2GT[0] == p2GT[1]:
+            continue
+        
+        # Obtain offspring genotypes that pass filtering
+        GQs = variant.format("GQ") if minGQ > 0 else None
+        siteGTs = []
+        for offspringIndex in offspringIndices:
+            sampleGT = genotypes[offspringIndex][:-1]
+            if len(sampleGT) != 2 or -1 in sampleGT or (GQs is not None and GQs[offspringIndex][0] < minGQ):
+                siteGTs.append([-1, -1])
+            else:
+                siteGTs.append(sorted(sampleGT))
+        
+        positions.append(variant.POS)
+        parentGTs.append([*p1GT, *p2GT])
+        offspringGTs.append(siteGTs)
+    
+    return (np.array(positions, dtype=np.int64),
+            np.array(parentGTs, dtype=np.int32).reshape(-1, 4),
+            np.array(offspringGTs, dtype=np.int32).reshape(-1, len(offspringIndices), 2))
+
+def paint_state_matches(parentGTs, offspringGTs):
+    '''
+    Determines which painting states are consistent with each offspring genotype.
+    
+    Parameters:
+        parentGTs / offspringGTs -- numpy arrays as returned by paint_parse_contig()
+    Returns:
+        matches -- a boolean numpy array of shape (nSites, nOffspring, 4) indicating whether
+                   the offspring genotype is consistent with inheriting each state's haplotypes
+    '''
+    stateGTs = np.stack([ parentGTs[:, PAINT_P1_HAP], parentGTs[:, 2 + PAINT_P2_HAP] ], axis=2)
+    stateGTs.sort(axis=2) # (nSites, 4, 2)
+    return (offspringGTs[:, :, None, :] == stateGTs[:, None, :, :]).all(axis=3)
+
+def paint_viterbi(positions, matches, called, recombinationRate, errorRate):
+    '''
+    Infers the most likely sequence of inherited parental haplotypes for each offspring
+    using a hidden Markov model with the four painting states. Transition probabilities
+    derive from the physical distance between sites via the Haldane map function, and
+    emission probabilities allow for genotyping errors.
+    
+    Parameters:
+        positions -- a numpy array of shape (nSites,) with variant positions
+        matches -- a numpy array as returned by paint_state_matches()
+        called -- a boolean numpy array of shape (nSites, nOffspring) indicating which
+                  offspring genotypes are present
+        recombinationRate -- a float indicating the expected recombination rate in cM/Mb
+        errorRate -- a float indicating the probability of an offspring genotype being erroneous
+    Returns:
+        path -- a numpy array of shape (nSites, nOffspring) with the most likely state at each site
+    '''
+    numSites, numOffspring = called.shape
+    
+    # Derive log emission probabilities; missing genotypes are uninformative
+    logE = np.where(matches, np.log(1 - errorRate), np.log(errorRate))
+    logE[~called] = 0
+    
+    # Derive log transition probabilities between each site and the one before it
+    morgans = np.diff(positions, prepend=positions[0]) * recombinationRate / 1e8
+    switchProb = np.clip(0.5 * (1 - np.exp(-2 * morgans)), 1e-300, 0.5)
+    logSwitch, logStay = np.log(switchProb)[:, None, None], np.log1p(-switchProb)[:, None, None]
+    p1Switch = PAINT_P1_HAP[:, None] != PAINT_P1_HAP[None, :]
+    p2Switch = PAINT_P2_HAP[:, None] != PAINT_P2_HAP[None, :]
+    logT = np.where(p1Switch, logSwitch, logStay) + np.where(p2Switch, logSwitch, logStay) # (nSites, 4, 4)
+    
+    # Run the forward pass, vectorised across offspring
+    backpointers = np.zeros((numSites, numOffspring, 4), dtype=np.int8)
+    delta = np.log(0.25) + logE[0]
+    for t in range(1, numSites):
+        candidates = delta[:, :, None] + logT[t][None, :, :]
+        backpointers[t] = candidates.argmax(axis=1)
+        delta = candidates.max(axis=1) + logE[t]
+    
+    # Trace back the most likely path
+    path = np.zeros((numSites, numOffspring), dtype=np.int8)
+    path[-1] = delta.argmax(axis=1)
+    offspringRange = np.arange(numOffspring)
+    for t in range(numSites - 1, 0, -1):
+        path[t-1] = backpointers[t][offspringRange, path[t]]
+    
+    return path
+
+def paint_block_counts(start, end, hap, evidencePositions, evidenceHaps):
+    '''
+    Counts the evidence markers within a block that support or conflict with its haplotype.
+    
+    Parameters:
+        start / end -- integers indicating the block's first and last marker positions
+        hap -- an integer indicating the block's haplotype (0 or 1)
+        evidencePositions -- a sorted numpy array of evidence marker positions
+        evidenceHaps -- a numpy array of the haplotype each evidence marker supports
+    Returns:
+        supporting / conflicting -- integer counts of evidence markers in the block
+    '''
+    left = np.searchsorted(evidencePositions, start, side="left")
+    right = np.searchsorted(evidencePositions, end, side="right")
+    supporting = int((evidenceHaps[left:right] == hap).sum())
+    return supporting, int(right - left) - supporting
+
+def paint_smooth_blocks(blocks, evidencePositions, evidenceHaps, minBlockSize, minMarkers):
+    '''
+    Iteratively removes the most weakly supported block that is either flanked by other blocks
+    and smaller than minBlockSize, or has a net support (supporting minus conflicting markers)
+    less than minMarkers. Short flanked blocks imply biologically unrealistic double crossovers and
+    likely reflect locus-specific artefacts, whereas poorly supported blocks occur where the parental
+    haplotypes are too similar to distinguish. A removed block is absorbed by its neighbour(s) when
+    they share a haplotype or it is at a contig edge; otherwise, it is dropped to leave a gap where
+    the crossover could not be precisely localised.
+    
+    Parameters:
+        blocks -- a list of lists with format like [[start, end, hap], ...] sorted by position
+        evidencePositions / evidenceHaps -- numpy arrays as described in paint_block_counts()
+        minBlockSize -- an integer indicating the minimum size in base pairs of a block
+                        flanked by other blocks
+        minMarkers -- an integer indicating the minimum net support for a block
+    Returns:
+        blocks -- the smoothed list of blocks with format like
+                  [[start, end, hap, supporting, conflicting], ...]
+    '''
+    blocks = [ [start, end, hap, *paint_block_counts(start, end, hap, evidencePositions, evidenceHaps)]
+              for start, end, hap in blocks ]
+    while len(blocks) > 1:
+        failing = [ i for i, (start, end, hap, supporting, conflicting) in enumerate(blocks)
+                   if (0 < i < len(blocks) - 1 and end - start < minBlockSize) or supporting - conflicting < minMarkers ]
+        if len(failing) == 0:
+            break
+        weakestIndex = min(failing, key=lambda x: (blocks[x][3] - blocks[x][4], blocks[x][1] - blocks[x][0]))
+        start, end = blocks[weakestIndex][:2]
+        
+        left = blocks[weakestIndex-1] if weakestIndex > 0 else None
+        right = blocks[weakestIndex+1] if weakestIndex < len(blocks) - 1 else None
+        if left is None:
+            right[0] = start
+            updated = right
+        elif right is None:
+            left[1] = end
+            updated = left
+        elif left[2] == right[2]:
+            left[1] = right[1]
+            del blocks[weakestIndex+1]
+            updated = left
+        else:
+            updated = None
+        del blocks[weakestIndex]
+        
+        if updated is not None:
+            updated[3:] = paint_block_counts(*updated[:3], evidencePositions, evidenceHaps)
+    
+    return blocks
+
+def paint_offspring_blocks(positions, evidence, pathHaps, minBlockSize, minMarkers):
+    '''
+    Derives smoothed haplotype blocks for each offspring's inherited haplotype from one parent.
+    
+    Parameters:
+        positions -- a numpy array of shape (nSites,) with variant positions
+        evidence -- a numpy array of shape (nSites, nOffspring) indicating the parental haplotype
+                    (0 or 1) that each offspring genotype supports, or -1 if it is uninformative
+        pathHaps -- a numpy array of shape (nSites, nOffspring) indicating the parental haplotype
+                    (0 or 1) inferred to be inherited by each offspring
+        minBlockSize / minMarkers -- integers as described in paint_smooth_blocks()
+    Returns:
+        offspringBlocks -- a list containing, for each offspring, a list of blocks as returned
+                           by paint_smooth_blocks()
+    '''
+    offspringBlocks = []
+    for offspringNum in range(evidence.shape[1]):
+        isEvidence = evidence[:, offspringNum] != -1
+        if not isEvidence.any():
+            offspringBlocks.append([])
+            continue
+        evidencePositions = positions[isEvidence]
+        evidenceHaps = evidence[isEvidence, offspringNum]
+        evidencePathHaps = pathHaps[isEvidence, offspringNum]
+        
+        # Form blocks from runs of the same inferred haplotype, then smooth them
+        runStarts = np.concatenate(([0], np.flatnonzero(np.diff(evidencePathHaps)) + 1))
+        runEnds = np.concatenate((runStarts[1:], [len(evidencePathHaps)])) - 1
+        blocks = [ [evidencePositions[s], evidencePositions[e], evidencePathHaps[s]] for s, e in zip(runStarts, runEnds) ]
+        offspringBlocks.append(paint_smooth_blocks(blocks, evidencePositions, evidenceHaps, minBlockSize, minMarkers))
+    
+    return offspringBlocks
+
+def paint_find_phase_switches(offspringBlocks, minShared, window):
+    '''
+    Identifies breakpoints shared by many offspring at the same location. Meiotic crossovers
+    occur independently in each offspring, so shared breakpoints instead indicate switch errors
+    in the parent's haplotype phasing.
+    
+    Parameters:
+        offspringBlocks -- a list as returned by paint_offspring_blocks()
+        minShared -- an integer indicating the minimum number of offspring sharing a breakpoint
+                     for it to be considered a phase switch
+        window -- an integer indicating the maximum distance between breakpoint midpoints
+                  for them to be considered as occurring at the same location
+    Returns:
+        switches -- a sorted list of lists with format like [[position, numShared], ...]
+    '''
+    breakpoints = sorted([ ((left[1] + right[0]) // 2, offspringNum)
+                           for offspringNum, blocks in enumerate(offspringBlocks)
+                           for left, right in zip(blocks[:-1], blocks[1:]) ])
+    
+    switches = []
+    clusterStart = 0
+    while clusterStart < len(breakpoints):
+        clusterEnd = clusterStart
+        while clusterEnd + 1 < len(breakpoints) and breakpoints[clusterEnd+1][0] - breakpoints[clusterStart][0] <= window:
+            clusterEnd += 1
+        cluster = breakpoints[clusterStart:clusterEnd+1]
+        numShared = len(set([ offspringNum for _, offspringNum in cluster ]))
+        if numShared >= minShared:
+            switches.append([int(np.median([ midpoint for midpoint, _ in cluster ])), numShared])
+        clusterStart = clusterEnd + 1
+    
+    return switches
+
+def pan_paint(args):
+    vcf = VCFTopia(args.vcfFile)
+    
+    try:
+        p1Index = vcf.samples.index(args.parents[0])
+        p2Index = vcf.samples.index(args.parents[1])
+    except ValueError:
+        raise ValueError(f"One or both parent IDs '{args.parents}' do not occur within the VCF sample IDs '{vcf.samples}'")
+    referenceIndex = vcf.samples.index(args.reference)
+    
+    offspringIndices = [ i for i in range(len(vcf.samples)) if not i in [p1Index, p2Index] ]
+    if len(offspringIndices) == 0:
+        raise ValueError(f"No offspring samples found in the VCF beyond the parents '{args.parents}'")
+    offspringIDs = [ vcf.samples[i] for i in offspringIndices ]
+    if args.minGQ > 0 and not "##FORMAT=<ID=GQ," in vcf.header:
+        print("WARNING: VCF does not contain a GQ FORMAT field; --minGQ filtering will not be applied")
+        args.minGQ = 0
+    minShared = max(3, math.ceil(args.phaseShared * len(offspringIDs)))
+    
+    with open(args.outputFileName, "w") as fileOut:
+        fileOut.write("sample\tchrom\tstart\tend\tparent\thaplotype\tsupporting\tconflicting\n")
+        for contig in vcf.contigs:
+            positions, parentGTs, offspringGTs = paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex,
+                                                                    offspringIndices, args.minGQ)
+            if len(positions) == 0:
+                continue
+            
+            # Drop sites where too many offspring are inconsistent with any inheritance state
+            matches = paint_state_matches(parentGTs, offspringGTs)
+            called = offspringGTs[:, :, 0] != -1
+            numCalled = called.sum(axis=1)
+            numErrors = (called & ~matches.any(axis=2)).sum(axis=1)
+            keep = (numCalled > 0) & (numErrors <= args.maxSiteError * numCalled)
+            positions, parentGTs, matches, called = positions[keep], parentGTs[keep], matches[keep], called[keep]
+            print(f"# {contig}: retained {keep.sum()} of {len(keep)} informative sites")
+            if len(positions) == 0:
+                continue
+            
+            path = paint_viterbi(positions, matches, called, args.recombinationRate, args.errorRate)
+            
+            # Derive haplotype blocks for each offspring's inherited haplotype from each parent
+            for parentID, stateHaps in zip(args.parents, [PAINT_P1_HAP, PAINT_P2_HAP]):
+                # Haplotype is evidenced where the genotype fits one parental haplotype but not the other
+                hapMatches = [ matches[:, :, stateHaps == hap].any(axis=2) for hap in [0, 1] ]
+                evidence = np.where(hapMatches[0] & ~hapMatches[1], 0,
+                                    np.where(hapMatches[1] & ~hapMatches[0], 1, -1))
+                pathHaps = stateHaps[path]
+                offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
+                                                         args.minBlockSize, args.minMarkers)
+                
+                # Correct parental phase switches by swapping haplotype labels after each switch
+                if args.phaseShared > 0:
+                    switches = paint_find_phase_switches(offspringBlocks, minShared, args.minBlockSize)
+                    if len(switches) > 0:
+                        for switchPosition, numShared in switches:
+                            print(f"# {contig}: corrected {parentID} phase switch at ~{switchPosition} " +
+                                  f"(shared by {numShared} of {len(offspringIDs)} offspring)")
+                        flip = (np.searchsorted([ switchPosition for switchPosition, _ in switches ], positions) % 2)[:, None]
+                        evidence = np.where(evidence == -1, -1, evidence ^ flip)
+                        pathHaps = pathHaps ^ flip
+                        offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
+                                                                 args.minBlockSize, args.minMarkers)
+                
+                for offspringID, blocks in zip(offspringIDs, offspringBlocks):
+                    for start, end, hap, supporting, conflicting in blocks:
+                        fileOut.write(f"{offspringID}\t{contig}\t{start}\t{end}\t{parentID}\t{hap+1}\t{supporting}\t{conflicting}\n")
 
 if __name__ == "__main__":
     pass

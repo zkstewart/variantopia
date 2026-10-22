@@ -23,13 +23,15 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.validation import validate_m, \
     validate_m_plot, validate_m_plot_stats, validate_m_plot_alignment, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
-    validate_pan, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
+    validate_pan, validate_pan_paint, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
+    validate_pan_plot_paint, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
     validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
-from modules.pangenome import pan_plot_inherit, pan_plot_het
+from modules.pangenome import pan_paint, pan_plot_inherit, pan_plot_het
+from modules.pangenomeplot import pan_plot_paint
 from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
@@ -283,6 +285,77 @@ def main():
     subPanParsers = panparser.add_subparsers(dest="panMode",
                                            required=True)
     
+    # Pangenome > paint mode
+    panpaintparser = subPanParsers.add_parser("paint",
+                                              parents=[p],
+                                              add_help=False,
+                                              help="Infer parental haplotype blocks inherited by progeny")
+    panpaintparser.set_defaults(func=panmain)
+    
+    panpaintparser.add_argument("-i", dest="vcfFile",
+                                required=True,
+                                help="""Location of VCF file containing pangenome parent haplotypes and
+                                progeny genotypes""")
+    panpaintparser.add_argument("-p", dest="parents",
+                                required=True,
+                                nargs=2,
+                                help="Specify the two parent samples")
+    panpaintparser.add_argument("-r", dest="reference",
+                                required=True,
+                                help="""Specify the parent sample whose other haplotype is the
+                                pangenome reference; its haplotype 1 is the reference""")
+    panpaintparser.add_argument("-o", dest="outputFileName",
+                                required=True,
+                                help="Location to write output TSV file of haplotype blocks")
+    panpaintparser.add_argument("--rate", dest="recombinationRate",
+                                required=False,
+                                type=float,
+                                help="""Optionally specify the expected recombination rate in cM/Mb;
+                                default == 1.0""",
+                                default=1.0)
+    panpaintparser.add_argument("--error", dest="errorRate",
+                                required=False,
+                                type=float,
+                                help="""Optionally specify the expected rate of progeny genotyping
+                                errors; default == 0.02""",
+                                default=0.02)
+    panpaintparser.add_argument("--minGQ", dest="minGQ",
+                                required=False,
+                                type=int,
+                                help="""Optionally specify the minimum GQ for a progeny genotype
+                                to be used; default == 30""",
+                                default=30)
+    panpaintparser.add_argument("--maxSiteError", dest="maxSiteError",
+                                required=False,
+                                type=float,
+                                help="""Optionally specify the maximum proportion of progeny at a site
+                                whose genotypes cannot be inherited from the parents before the site
+                                is ignored; default == 0.2""",
+                                default=0.2)
+    panpaintparser.add_argument("--minBlock", dest="minBlockSize",
+                                required=False,
+                                type=int,
+                                help="""Optionally specify the minimum size (bp) of a haplotype block
+                                flanked by crossovers on both sides, i.e., the minimum realistic distance
+                                between two crossovers; shorter blocks are merged into their neighbours;
+                                default == 1000000""",
+                                default=1000000)
+    panpaintparser.add_argument("--minMarkers", dest="minMarkers",
+                                required=False,
+                                type=int,
+                                help="""Optionally specify the minimum net number of markers (supporting
+                                minus conflicting) for a haplotype block; blocks with fewer are merged
+                                into their neighbours; default == 50""",
+                                default=50)
+    panpaintparser.add_argument("--phaseShared", dest="phaseShared",
+                                required=False,
+                                type=float,
+                                help="""Optionally specify the minimum proportion of offspring (and at
+                                least 3) sharing a breakpoint for it to be treated as a phase switch error
+                                in the parent's haplotypes and corrected; set to 0 to disable;
+                                default == 0.75""",
+                                default=0.75)
+    
     # Pangenome > plot subparser
     panplotparser = subPanParsers.add_parser("plot",
                                              parents=[p],
@@ -292,6 +365,53 @@ def main():
     
     subPanPlotParsers = panplotparser.add_subparsers(dest="panPlotMode",
                                                      required=True)
+    
+    # Pangenome > plot > paint mode
+    panplotpaintparser = subPanPlotParsers.add_parser("paint",
+                                                      parents=[p],
+                                                      add_help=False,
+                                                      help="Circos plot of progeny painted with inherited parental haplotypes")
+    panplotpaintparser.add_argument("-i", dest="vcfFile",
+                                    required=True,
+                                    help="""Location of the VCF file given to 'pangenome paint' mode; its
+                                    header provides chromosome lengths""")
+    panplotpaintparser.add_argument("-t", dest="paintFile",
+                                    required=True,
+                                    help="Location of the TSV file produced by 'pangenome paint' mode")
+    panplotpaintparser.add_argument("-o", dest="outputFileName",
+                                    required=True,
+                                    help="Location to write output file; must end in .pdf, .png, or .svg")
+    panplotpaintparser.add_argument("--samples", dest="samples",
+                                    required=False,
+                                    nargs="+",
+                                    help="""Optionally specify one or more progeny samples to plot, from
+                                    outermost to innermost; default is all samples in file order""",
+                                    default=[])
+    panplotpaintparser.add_argument("--colours", dest="colours",
+                                    required=False,
+                                    nargs=4,
+                                    help="""Optionally specify four colours for the first parent's haplotypes
+                                    1 and 2, then the second parent's haplotypes 1 and 2; default is
+                                    '#1f5fa8 #8ec1ee #c75a00 #fdbf80'""",
+                                    default=["#1f5fa8", "#8ec1ee", "#c75a00", "#fdbf80"])
+    panplotpaintparser.add_argument("--ticks", dest="tickInterval",
+                                    required=False,
+                                    type=int,
+                                    help="""Optionally specify the interval (bp) between labelled chromosome
+                                    ticks; default == 10000000""",
+                                    default=10000000)
+    panplotpaintparser.add_argument("--size", dest="figSize",
+                                    required=False,
+                                    type=float,
+                                    help="""Optionally specify the width and height (inches) of the
+                                    figure; default == 10""",
+                                    default=10)
+    panplotpaintparser.add_argument("--labelSize", dest="labelSize",
+                                    required=False,
+                                    type=float,
+                                    help="""Optionally specify the font size of sample labels; default
+                                    is scaled to the track height, up to a maximum of 8""",
+                                    default=None)
     
     # Pangenome > plot > heterozygosity mode
     panplotheteroparser = subPanPlotParsers.add_parser("heterozygosity",
@@ -750,6 +870,10 @@ def mmain(args):
 
 def panmain(args):
     # Split into sub-mode-specific functions
+    if args.panMode == "paint":
+        print("## Paint progeny with inherited parental haplotypes ##")
+        validate_pan_paint(args)
+        pan_paint(args)
     if args.panMode == "plot":
         validate_pan_plot(args)
         if args.panPlotMode == "heterozygosity":
@@ -760,6 +884,10 @@ def panmain(args):
             print("## Plot of haplotype inheritance ##")
             validate_pan_plot_inherit(args)
             pan_plot_inherit(args)
+        if args.panPlotMode == "paint":
+            print("## Circos plot of painted progeny haplotypes ##")
+            validate_pan_plot_paint(args)
+            pan_plot_paint(args)
 
 def vmain(args):
     # Split into sub-mode-specific functions

@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os, sys, importlib
+from matplotlib.colors import is_color_like
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file
@@ -157,6 +158,32 @@ def validate_pan(args):
     if os.path.exists(args.outputFileName):
         raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
+def validate_pan_paint(args):
+    '''
+    Validation for arguments used in "pangenome paint" mode.
+    '''
+    # Validate sample arguments
+    if args.parents[0] == args.parents[1]:
+        raise ValueError(f"Parents (-p {args.parents}) must be two different samples for 'pangenome paint' mode")
+    if not args.reference in args.parents:
+        raise ValueError(f"Reference (-r {args.reference}) must be one of the parents (-p {args.parents})")
+    
+    # Validate numeric arguments
+    if args.recombinationRate <= 0:
+        raise ValueError("--rate must be greater than 0")
+    if not 0 < args.errorRate < 0.5:
+        raise ValueError("--error must be greater than 0 and less than 0.5")
+    if args.minGQ < 0:
+        raise ValueError("--minGQ must be >= 0")
+    if not 0 <= args.maxSiteError <= 1:
+        raise ValueError("--maxSiteError must be between 0 and 1")
+    if args.minBlockSize < 0:
+        raise ValueError("--minBlock must be >= 0")
+    if args.minMarkers < 0:
+        raise ValueError("--minMarkers must be >= 0")
+    if not 0 <= args.phaseShared <= 1:
+        raise ValueError("--phaseShared must be between 0 and 1")
+
 def validate_pan_plot(args):
     '''
     Validation for arguments common to all "pangenome plot" mode commands.
@@ -174,6 +201,33 @@ def validate_pan_plot_inherit(args):
     Validation for arguments used in "pangenome plot inheritance" mode.
     '''
     pass # no specific validation needed for 'pangenome plot inheritance' mode
+
+def validate_pan_plot_paint(args):
+    '''
+    Validation for arguments used in "pangenome plot paint" mode.
+    '''
+    # Validate paint file
+    args.paintFile = os.path.abspath(args.paintFile)
+    if not os.path.isfile(args.paintFile):
+        raise FileNotFoundError(f"Paint file (-t {args.paintFile}) does not exist!")
+    
+    # Validate colours
+    for colour in args.colours:
+        if not is_color_like(colour):
+            raise ValueError(f"--colours value '{colour}' is not a recognised colour")
+    
+    # Validate numeric arguments
+    if args.tickInterval < 1:
+        raise ValueError("--ticks must be a positive integer greater than 0")
+    if args.figSize <= 0:
+        raise ValueError("--size must be greater than 0")
+    if args.labelSize is not None and args.labelSize <= 0:
+        raise ValueError("--labelSize must be greater than 0")
+    
+    # Validate output file name
+    ALLOWED_EXTENSIONS = [".pdf", ".png", ".svg"]
+    if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
 # vcf mode
 def validate_v(args):
