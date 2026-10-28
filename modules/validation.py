@@ -13,19 +13,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, sys, importlib
+import os, sys, shutil, importlib
 from matplotlib.colors import is_color_like
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from parsing import read_gz_file
+from parsing import read_gz_file, parse_text_list, parse_memory_str
 from annotarium_importers import import_annotarium_gff3, import_annotarium_domains
-
-def parse_text_list(fileName):
-    ids = []
-    with read_gz_file(fileName) as fileIn:
-        for line in fileIn:
-            ids.append(line.rstrip("\r\n\t "))
-    return ids
 
 # msa mode
 class MissingArgumentError(Exception):
@@ -239,10 +232,11 @@ def validate_v(args):
     if not os.path.isfile(args.vcfFile):
         raise FileNotFoundError(f"VCF file (-i {args.vcfFile}) does not exist!")
     
-    # Validate output file name
-    args.outputFileName = os.path.abspath(args.outputFileName)
-    if os.path.exists(args.outputFileName):
-        raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+    # Validate output file name (modes writing multiple files from a prefix validate their own)
+    if hasattr(args, "outputFileName"):
+        args.outputFileName = os.path.abspath(args.outputFileName)
+        if os.path.exists(args.outputFileName):
+            raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
 
 def validate_v_cn(args):
     '''
@@ -424,6 +418,74 @@ def validate_v_to_geno(args):
         args.outputFileName += ".gz"
     if os.path.exists(args.outputFileName):
         raise FileExistsError(f"Output file (-o {args.outputFileName}) already exists!")
+
+def validate_v_to_plink(args):
+    '''
+    Validation for arguments used in "vcf to plink" mode.
+    '''
+    # Validate fam file
+    args.famFile = os.path.abspath(args.famFile)
+    if not os.path.isfile(args.famFile):
+        raise FileNotFoundError(f"Fam file (-f {args.famFile}) does not exist!")
+
+    # Validate optional mapping files
+    if args.chromMap is not None:
+        args.chromMap = os.path.abspath(args.chromMap)
+        if not os.path.isfile(args.chromMap):
+            raise FileNotFoundError(f"Chromosome map file (--chrom {args.chromMap}) does not exist!")
+    if args.sampleMap is not None:
+        args.sampleMap = os.path.abspath(args.sampleMap)
+        if not os.path.isfile(args.sampleMap):
+            raise FileNotFoundError(f"Sample map file (--sample {args.sampleMap}) does not exist!")
+
+    # Validate output location
+    args.outputPrefix = os.path.abspath(args.outputPrefix)
+    if not os.path.isdir(os.path.dirname(args.outputPrefix)):
+        raise FileNotFoundError(f"Output directory for -o {args.outputPrefix} does not exist!")
+
+    # Validate numeric arguments
+    if args.threads < 1:
+        raise ValueError("--threads must be a positive integer greater than 0.")
+
+    if args.bgenBits < 1 or args.bgenBits > 32:
+        raise ValueError("--bgenBits must be an integer from 1 to 32.")
+    if args.maxAlleles == 0:
+        args.maxAlleles = None # no limit
+    elif args.maxAlleles < 2:
+        raise ValueError("--maxAlleles must be 0 (no limit) or an integer >= 2.")
+
+    # Validate compression against the output format
+    FORMAT_COMPRESSION = {
+        "pgen": ["none", "zstd"],
+        "bgen": ["zlib", "zstd"]
+    }
+    if args.compression == None:
+        args.compression = FORMAT_COMPRESSION[args.outputFormat][0]
+    elif not args.compression in FORMAT_COMPRESSION[args.outputFormat]:
+        raise ValueError(f"--compression '{args.compression}' is not compatible with --format '{args.outputFormat}'; " +
+                         f"choose from {FORMAT_COMPRESSION[args.outputFormat]}")
+    if args.compression == "none":
+        args.compression = None
+
+    # Validate temporary directory location
+    if args.tmpDir != None:
+        args.tmpDir = os.path.abspath(args.tmpDir)
+        if not os.path.isdir(args.tmpDir):
+            raise FileNotFoundError(f"Temporary directory location (--tmpDir {args.tmpDir}) does not exist!")
+
+    # Validate memory argument
+    args.memory = parse_memory_str(args.memory, "Mb") # plink2 accepts memory in megabyte format
+    args.memory = args.memory.strip("Mb") # but plink2 wants it just as an integer, not with 'Mb' suffix
+
+    # Validate plink2 executable
+    if args.plink2 == None:
+        args.plink2 = shutil.which("plink2")
+        if args.plink2 == None:
+            raise FileNotFoundError("plink2 is not discoverable in your system PATH and --plink2 was not specified")
+    else:
+        args.plink2 = os.path.abspath(args.plink2)
+        if not os.path.isfile(args.plink2):
+            raise FileNotFoundError(f"plink2 executable (--plink2 {args.plink2}) does not exist!")
 
 def validate_v_to_pos(args):
     '''

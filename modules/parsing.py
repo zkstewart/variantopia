@@ -95,6 +95,55 @@ class BgzCapableWriter:
                 elif shutil.which("tabix"):
                     run_tabix(self.filename)
 
+def parse_text_list(fileName):
+    ids = []
+    with read_gz_file(fileName) as fileIn:
+        for line in fileIn:
+            ids.append(line.rstrip("\r\n\t "))
+    return ids
+
+def parse_memory_str(memoryStr, outputUnit="Mb"):
+    '''
+    Parameters:
+        memoryStr -- a string with format '[num][unit]'
+        outputUnit -- a string indicating the bytes unit to output;
+                      recognised values are 'Kb' or 'Mb' or 'Gb'
+    Returns:
+        revisedMemoryStr -- a string with format '[num][unit]' where
+                            the number has been reformatted into the
+                            intended outputUnit
+    '''
+    MEMORY_UNITS = {
+        "Kb": 1000,
+        "Mb": 1e+6,
+        "Gb": 1e+9
+    }
+    RECOGNISED_UNITS = list(MEMORY_UNITS.keys())
+    
+    # Validate unit value
+    if not outputUnit in MEMORY_UNITS:
+        raise ValueError(f"Output unit type '{outputUnit}' must be in '{RECOGNISED_UNITS}'")
+    
+    # Parse str
+    num, inputUnit = memoryStr[0:-2], memoryStr[-2:]
+    if not inputUnit in MEMORY_UNITS:
+        raise ValueError(f"Input memory string '{memoryStr}' has a unit type '{inputUnit}' " + 
+                         f"not within the recognised values '{RECOGNISED_UNITS}'")
+    if not num.isdigit():
+        raise ValueError(f"Input memory string '{memoryStr}' has a value at its start '{num}' " + 
+                         "which is not recognised as a valid integer")
+    try:
+        num = int(num)
+    except:
+        raise ValueError(f"Input memory string '{memoryStr}' has a value at its start '{num}' " + 
+                         "which is not recognised as a valid integer")
+    
+    # Convert number to bytes then back to the output unit
+    num = int(num * MEMORY_UNITS[inputUnit])
+    num = int(num / MEMORY_UNITS[outputUnit])
+    
+    return f"{num}{outputUnit}"
+
 def parse_metadata_groups(metadataGroupsFile):
     ACCEPTED_GROUPS = ["0", "1", "2"]
     metadataGroups = {}

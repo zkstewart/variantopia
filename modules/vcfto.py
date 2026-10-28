@@ -19,6 +19,7 @@ from Bio import SeqIO
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vcftopia import VCFTopia
 from parsing import GzCapableWriter
+from plink import PLINK
 
 def vcf_to_cf(args):
     '''
@@ -180,6 +181,30 @@ def vcf_to_geno(args):
             
             # Write the geno line to the output file
             fileOut.write("\t".join(geno) + "\n")
+
+def vcf_to_plink(args):
+    '''
+    Handles "reformat plink" mode of variantopia.
+    '''
+    plink = PLINK(args.vcfFile, args.famFile, args.outputPrefix)
+    plink.plinkExe = args.plink2
+    plink.chromMap = args.chromMap
+    plink.sampleMap = args.sampleMap
+    plink.allowMissing = args.allowMissing
+    plink.outputFormat = args.outputFormat # set before compression, which is validated against it
+    plink.compression = args.compression
+    plink.bgenBits = args.bgenBits
+    plink.maxAlleles = args.maxAlleles
+    plink.threads = args.threads
+    plink.memory = args.memory
+    plink.tmpDir = args.tmpDir
+    plink.keepTmp = args.keepTmp
+
+    # Convert VCF and report on samples
+    outputFiles = plink.convert()
+    print(f"# Wrote {', '.join(outputFiles)}")
+    qcFile = plink.sample_qc()
+    print(f"# Wrote sample QC report to {qcFile}")
 
 def vcf_to_pos(args):
     '''

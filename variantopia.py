@@ -26,7 +26,7 @@ from modules.validation import validate_m, \
     validate_pan, validate_pan_paint, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
     validate_pan_plot_paint, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
-    validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_pos, validate_v_to_table, validate_v_to_msa, \
+    validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_msa, validate_v_to_plink, validate_v_to_pos, validate_v_to_table, \
     validate_v_cn, validate_v_cn_plot
 from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
@@ -36,7 +36,7 @@ from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
 from modules.vcfplot import vcf_plot
-from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_pos, vcf_to_table, vcf_to_msa
+from modules.vcfto import vcf_to_cf, vcf_to_geno, vcf_to_msa, vcf_to_plink, vcf_to_pos, vcf_to_table
 from _version import __version__
 
 def main():
@@ -755,11 +755,116 @@ def main():
                             help="Optionally, keep indels in the output file",
                             default=False)
     
+    # VCF > to > msa mode
+    vtomparser = subVcfToParsers.add_parser("msa",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to MSA format of just variants e.g., for tree building")
+    vtomparser.add_argument("-i", dest="vcfFile",
+                            required=True,
+                            help="Location of VCF file to reformat")
+    vtomparser.add_argument("-o", dest="outputFileName",
+                            required=True,
+                            help="Location to write reformatted file")
+    vtomparser.add_argument("--ploidy", dest="ploidy",
+                            required=False,
+                            type=int,
+                            help="Optionally, indicate the ploidy of the samples (default: 2)",
+                            default=2)
+    
+    # VCF > to > plink mode
+    vtoplparser = subVcfToParsers.add_parser("plink",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Convert to PLINK2 format for subsequent analyses")
+    vtoplparser.add_argument("-i", dest="vcfFile",
+                             required=True,
+                             help="Location of VCF file to reformat")
+    vtoplparser.add_argument("-f", dest="famFile",
+                             required=True,
+                             help="Location of .fam file describing ")
+    vtoplparser.add_argument("-o", dest="outputPrefix",
+                             required=True,
+                             help="Location to write reformatted file")
+    vtoplparser.add_argument("--chrom", dest="chromMap",
+                             required=False,
+                             help="""Optionally, provide a two-column TSV file relating
+                             VCF contigs (left) to simple PLINK-compliant chromosome numbers
+                             (right). Unlisted contigs are removed from the resulting outputs""",
+                             default=None)
+    vtoplparser.add_argument("--sample", dest="sampleMap",
+                             required=False,
+                             help="""Optionally, provide a two-column TSV file relating
+                             VCF samples (left) to their sample IID listed in the .fam file
+                             (right). Unlisted contigs are removed from the resulting outputs""",
+                             default=None)
+    vtoplparser.add_argument("--threads", dest="threads",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of threads to use with
+                             PLINK2 tasks; default == 1""",
+                             default=1)
+    vtoplparser.add_argument("--mem", dest="memory",
+                             required=False,
+                             help="""Optionally, specify the amount of memory to use with
+                             PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                             '16000000Kb')""",
+                             default="16Gb")
+    vtoplparser.add_argument("--format", dest="outputFormat",
+                             required=False,
+                             choices=["pgen", "bgen"],
+                             help="""Optionally, specify the output file format; default
+                             == 'pgen'""",
+                             default="pgen")
+    vtoplparser.add_argument("--compression", dest="compression",
+                             required=False,
+                             choices=["none", "zstd", "zlib"],
+                             help="""Optionally, specify the output compression. For pgen,
+                             'none' or 'zstd' (compresses the .pvar); for bgen, 'zlib'
+                             (writes bgen v1.2) or 'zstd' (writes bgen v1.3); default
+                             == 'none' for pgen and 'zlib' for bgen""",
+                             default=None)
+    vtoplparser.add_argument("--bgenBits", dest="bgenBits",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the bits of precision per genotype
+                             probability in bgen output; default == 8""",
+                             default=8)
+    vtoplparser.add_argument("--maxAlleles", dest="maxAlleles",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the maximum number of alleles (REF + ALTs)
+                             for a variant to be retained, or 0 for no limit; default == 2
+                             (biallelic variants only)""",
+                             default=2)
+    vtoplparser.add_argument("--allowMissing", dest="allowMissing",
+                             required=False,
+                             action="store_true",
+                             help="""Optionally, keep samples absent from the .fam file as
+                             unphenotyped samples rather than raising an error""",
+                             default=False)
+    vtoplparser.add_argument("--tmpDir", dest="tmpDir",
+                             required=False,
+                             help="""Optionally, specify the directory in which to create the
+                             temporary working directory; default is the output directory""",
+                             default=None)
+    vtoplparser.add_argument("--keepTmp", dest="keepTmp",
+                             required=False,
+                             action="store_true",
+                             help="""Optionally, keep the temporary working directory and its
+                             intermediate files rather than deleting them""",
+                             default=False)
+    vtoplparser.add_argument("--plink2", dest="plink2",
+                             required=False,
+                             help="""Optionally, specify the location of the plink2 executable
+                             if it is not discoverable in your system PATH""",
+                             default=None)
+
     # VCF > to > pos mode
     vtopparser = subVcfToParsers.add_parser("pos",
-                                              parents=[p],
-                                              add_help=False,
-                                              help="Convert to pos format e.g., for tree ngsLD")
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Convert to pos format e.g., for tree ngsLD")
     vtopparser.add_argument("-i", dest="vcfFile",
                            required=True,
                            help="Location of VCF file to reformat")
@@ -798,23 +903,6 @@ def main():
                             help="""Optionally, specify a text file listing the order of samples
                             (as columns) in the output table; default is to use the VCF header order""",
                             default=None)
-    
-    # VCF > to > msa mode
-    vtomparser = subVcfToParsers.add_parser("msa",
-                                            parents=[p],
-                                            add_help=False,
-                                            help="Convert to MSA format of just variants e.g., for tree building")
-    vtomparser.add_argument("-i", dest="vcfFile",
-                            required=True,
-                            help="Location of VCF file to reformat")
-    vtomparser.add_argument("-o", dest="outputFileName",
-                            required=True,
-                            help="Location to write reformatted file")
-    vtomparser.add_argument("--ploidy", dest="ploidy",
-                            required=False,
-                            type=int,
-                            help="Optionally, indicate the ploidy of the samples (default: 2)",
-                            default=2)
     
     args = subParentParser.parse_args()
     
@@ -930,6 +1018,14 @@ def vmain(args):
             print("## VCF to Geno conversion ##")
             validate_v_to_geno(args)
             vcf_to_geno(args)
+        elif args.vcfToMode == "msa":
+            print("## VCF to MSA conversion ##")
+            validate_v_to_msa(args)
+            vcf_to_msa(args)
+        elif args.vcfToMode == "plink":
+            print("## VCF to PLINK2 conversion ##")
+            validate_v_to_plink(args)
+            vcf_to_plink(args)
         elif args.vcfToMode == "pos":
             print("## VCF to Pos conversion ##")
             validate_v_to_pos(args)
@@ -938,10 +1034,6 @@ def vmain(args):
             print("## VCF to Table conversion ##")
             validate_v_to_table(args)
             vcf_to_table(args)
-        elif args.vcfToMode == "msa":
-            print("## VCF to MSA conversion ##")
-            validate_v_to_msa(args)
-            vcf_to_msa(args)
     
     print("VCF handling complete!")
 
