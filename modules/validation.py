@@ -18,6 +18,7 @@ from matplotlib.colors import is_color_like
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_text_list, parse_memory_str
+from subprocess_runners import check_r_packages
 from annotarium_importers import import_annotarium_gff3, import_annotarium_domains
 
 # msa mode
@@ -252,6 +253,26 @@ def validate_plink_runtime(args):
         if not os.path.isfile(args.plink2):
             raise FileNotFoundError(f"plink2 executable (--plink2 {args.plink2}) does not exist!")
 
+def validate_rscript(args, packages):
+    '''
+    Validation for the --rscript argument, also checking that the R packages
+    needed by a utilities script are installed.
+    '''
+    # Validate Rscript executable
+    if args.rscript == None:
+        args.rscript = shutil.which("Rscript")
+        if args.rscript == None:
+            raise FileNotFoundError("Rscript is not discoverable in your system PATH and --rscript was not specified")
+    else:
+        args.rscript = os.path.abspath(args.rscript)
+        if not os.path.isfile(args.rscript):
+            raise FileNotFoundError(f"Rscript executable (--rscript {args.rscript}) does not exist!")
+
+    # Validate R packages
+    missing = check_r_packages(packages, args.rscript)
+    if missing != []:
+        raise ModuleNotFoundError(f"R package(s) {missing} are not installed for Rscript '{args.rscript}'")
+
 def validate_pl(args):
     '''
     Validation for arguments common to all "plink" mode commands.
@@ -295,6 +316,62 @@ def validate_pl_filter(args):
     if not 0 <= args.maf <= 0.5:
         raise ValueError("--maf must be a number from 0 to 0.5.")
 
+def validate_pl_output_directory(args):
+    '''
+    Validation for the -o output directory of "plink" mode commands, creating
+    it if it does not exist.
+    '''
+    args.outputDirectory = os.path.abspath(args.outputDirectory)
+    if not os.path.exists(args.outputDirectory):
+        os.makedirs(args.outputDirectory, exist_ok=True)
+        print(f"# Created '{args.outputDirectory}' as part of argument validation")
+    elif not os.path.isdir(args.outputDirectory):
+        raise FileExistsError(f"Output directory (-o {args.outputDirectory}) exists but is not a directory!")
+
+def validate_pl_king(args):
+    '''
+    Validation for arguments used in "plink king" mode.
+    '''
+    # Validate output directory
+    validate_pl_output_directory(args)
+
+    # Validate optional variant file
+    if args.extractFile is not None:
+        args.extractFile = os.path.abspath(args.extractFile)
+        if not os.path.isfile(args.extractFile):
+            raise FileNotFoundError(f"Variant file (--extract {args.extractFile}) does not exist!")
+
+    # Validate numeric arguments
+    if not 0 < args.minKinship <= 0.5:
+        raise ValueError("--minKinship must be a number greater than 0 and at most 0.5.")
+
+    # Validate plot title
+    if args.title == None:
+        args.title = os.path.basename(args.plinkPrefix)
+
+    # Validate Rscript and the packages needed by plot_king.R
+    validate_rscript(args, ["optparse", "data.table", "ggplot2"])
+
+def validate_pl_pca(args):
+    '''
+    Validation for arguments used in "plink pca" mode.
+    '''
+    # Validate output directory
+    validate_pl_output_directory(args)
+
+    # Validate numeric arguments
+    if args.npcs < 1:
+        raise ValueError("--npcs must be a positive integer greater than 0.")
+    if args.plotPCs < 2:
+        raise ValueError("--plotPCs must be an integer >= 2.")
+
+    # Validate plot title
+    if args.title == None:
+        args.title = os.path.basename(args.plinkPrefix)
+
+    # Validate Rscript and the packages needed by plot_pca.R
+    validate_rscript(args, ["optparse", "data.table", "ggplot2"])
+
 def validate_pl_prune(args):
     '''
     Validation for arguments used in "plink prune" mode.
@@ -317,12 +394,7 @@ def validate_pl_qc(args):
     Validation for arguments used in "plink qc" mode.
     '''
     # Validate output directory
-    args.outputDirectory = os.path.abspath(args.outputDirectory)
-    if not os.path.exists(args.outputDirectory):
-        os.makedirs(args.outputDirectory, exist_ok=True)
-        print(f"# Created '{args.outputDirectory}' as part of argument validation")
-    elif not os.path.isdir(args.outputDirectory):
-        raise FileExistsError(f"Output directory (-o {args.outputDirectory}) exists but is not a directory!")
+    validate_pl_output_directory(args)
 
 # vcf mode
 def validate_v(args):

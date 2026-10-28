@@ -13,12 +13,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, re, sys, shutil, subprocess, tempfile
+import os, re, sys, shutil, statistics, subprocess, tempfile
 from collections import Counter
 from contextlib import contextmanager
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_2col_tsv_as_dict
+from subprocess_runners import run_rscript
 
 class PLINKTool:
     '''
@@ -270,7 +271,7 @@ class PLINKTool:
 class PLINK(PLINKTool):
     '''
     Encapsulates an existing PLINK fileset (pgen, bgen or bed) for QC reporting,
-    sample and variant filtering, and LD pruning.
+    sample and variant filtering, LD pruning, PCA, and KING kinship estimation.
 
     Sample and variant selection properties (removeFile, requirePheno,
     nonfounders, snpsOnly, geno, maf) apply to both filter() and prune(); they
@@ -290,6 +291,8 @@ class PLINK(PLINKTool):
         plink.geno, plink.maf = 0.05, 0.05
         plink.densityCap = 3
         plink.prune("output/prefix.pruned")
+        PLINK("output/prefix.pruned", "pgen").pca("output/pca/prefix.pruned.pca")
+        plink.king("output/king/prefix.king", extractFile="output/prefix.pruned.pvar.zst")
     '''
     INPUT_FORMATS = ["pgen", "bgen", "bed"]
 
@@ -312,6 +315,9 @@ class PLINK(PLINKTool):
         self.windowKb = 1000
         self.densityCap = None
         self.densityBinSize = 1000000
+
+        # Set default values for adjustable PCA properties
+        self.npcs = 20
         self.filterCounts = {}
         self.pruneCounts = {}
 
@@ -540,6 +546,19 @@ class PLINK(PLINKTool):
             raise ValueError("densityBinSize must be a positive integer")
         self._densityBinSize = value
 
+    @property
+    def npcs(self):
+        return self._npcs
+
+    @npcs.setter
+    def npcs(self, value):
+        '''
+        Number of principal components to compute.
+        '''
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("npcs must be a positive integer")
+        self._npcs = value
+
     @staticmethod
     def count_lines(fileName, skipHeader=False):
         with open(fileName, "r") as fileIn:
@@ -710,6 +729,102 @@ class PLINK(PLINKTool):
             return self.write_fileset(["--pfile", filteredPrefix, "--extract", pruneIn],
                                       outputPrefix, workDir)
 
+    def write_psam(self, outputPrefix):
+        '''
+        Writes this fileset's sample information as a .psam, whatever its format.
+
+        Parameters:
+            outputPrefix -- a string of the output prefix; '<outputPrefix>.psam'
+                            is written
+        Returns:
+            psamFile -- a string of the .psam location
+        '''
+        self.run_plink(self.inputArgs + ["--make-just-psam"], outputPrefix)
+        return outputPrefix + ".psam"
+
+    def pca(self, outputPrefix):
+        '''
+        Runs a PCA of all samples, with SNP loadings. The fileset should already
+        be LD pruned (see prune()). If nonfounders is True, all samples are used
+        for the allele frequencies that standardise genotypes.
+
+        Parameters:
+            outputPrefix -- a string of the output prefix; files are written to
+                            '<outputPrefix>.{eigenvec,eigenval,eigenvec.var,log}'
+        Returns:
+            outputFiles -- a list of the output files written
+        '''
+        outputPrefix = os.path.abspath(outputPrefix)
+        outputFiles = [ outputPrefix + suffix for suffix in [".eigenvec", ".eigenval", ".eigenvec.var"] ]
+        self.check_outputs_absent(outputFiles)
+
+        args = self.inputArgs + (["--nonfounders"] if self.nonfounders else [])
+        self.run_plink(args + ["--pca", str(self.npcs), "biallelic-var-wts"], outputPrefix)
+        return outputFiles
+
+    def variant_ids(self, extractFile, workDir):
+        '''
+        Writes the variant IDs listed in, or described by, a file into workDir
+        for use with plink2 --extract.
+
+        Parameters:
+            extractFile -- a string pointing to a .pvar, .pvar.zst or .bim file,
+                           or a plain list of variant IDs (one per line)
+            workDir -- a string pointing to the working directory
+        Returns:
+            idFile -- a string of the variant ID list's location
+        '''
+        # Decompress .zst files with plink2 itself
+        if extractFile.endswith(".zst"):
+            decompressedFile = os.path.join(workDir, os.path.basename(extractFile)[:-4])
+            result = subprocess.run([self.plinkExe, "--zst-decompress", extractFile, decompressedFile],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if result.returncode != 0:
+                raise Exception(f"plink2 failed to decompress '{extractFile}'; stderr was:\n{result.stderr.decode('utf-8')}")
+            extractFile = decompressedFile
+
+        if not (extractFile.endswith(".pvar") or extractFile.endswith(".bim")):
+            return extractFile # assume a plain ID list
+
+        idFile = os.path.join(workDir, "extract.txt")
+        with open(extractFile, "r") as fileIn, open(idFile, "w") as fileOut:
+            idIndex = 1 # .bim column
+            for line in fileIn:
+                if line.startswith("##"):
+                    continue
+                if line.startswith("#"):
+                    idIndex = line.rstrip("\r\n").split("\t").index("ID")
+                    continue
+                fileOut.write(line.split()[idIndex] + "\n")
+        return idFile
+
+    def king(self, outputPrefix, extractFile=None):
+        '''
+        Estimates KING-robust kinship between all pairs of samples. LD-pruned
+        variants should be used, either by running this on a pruned fileset or
+        by giving the pruned variants as extractFile; the latter allows samples
+        excluded from pruning (e.g., unphenotyped parents) to be included.
+
+        Parameters:
+            outputPrefix -- a string of the output prefix; files are written to
+                            '<outputPrefix>.{kin0,log}'
+            extractFile -- (OPTIONAL) a string pointing to a .pvar, .pvar.zst or
+                           .bim file, or a plain list of variant IDs, to restrict
+                           the variants used
+        Returns:
+            kin0File -- a string of the kinship table's location
+        '''
+        outputPrefix = os.path.abspath(outputPrefix)
+        kin0File = outputPrefix + ".kin0"
+        self.check_outputs_absent([kin0File])
+
+        with self.work_dir(outputPrefix) as workDir:
+            args = list(self.inputArgs)
+            if extractFile is not None:
+                args += ["--extract", self.variant_ids(os.path.abspath(extractFile), workDir)]
+            self.run_plink(args + ["--make-king-table"], outputPrefix)
+        return kin0File
+
     def sample_qc(self, outputPrefix):
         '''
         Writes a per-sample QC report of missingness (all variants) and
@@ -750,6 +865,197 @@ class PLINK(PLINKTool):
             shutil.move(qcPrefix + ".scount", outputFiles[2])
 
         return outputFiles
+
+class KING:
+    '''
+    Interprets a PLINK2 KING-robust kinship table (.kin0) alongside the recorded
+    pedigree of its samples, to verify recorded parent-offspring relationships.
+
+    Expected values for a true parent-offspring pair are kinship ~0.25 (first-degree
+    range 0.177-0.354) and IBS0 ~0 (an offspring always shares >= 1 allele with its
+    parent). Genotyping error from low-depth calls inflates IBS0 and deflates
+    kinship, so the observed values are also summarised as the median across all
+    recorded pairs.
+
+    Example:
+        king = KING("prefix.king.kin0", "prefix.psam")
+        king.minKinship = 0.177
+        stats = king.check_pedigree("prefix.king.pedigree_check.tsv")
+    '''
+    PEDIGREE_CHECK_HEADER = ["IID", "FID", "ROLE", "RECORDED_PARENT", "KINSHIP", "IBS0",
+                             "STATUS", "BEST_CANDIDATE", "BEST_KINSHIP", "BEST_IBS0"]
+
+    def __init__(self, kin0File, sampleFile):
+        self.kin0File = kin0File
+        self.sampleFile = sampleFile
+        self.minKinship = 0.177
+
+    @property
+    def kin0File(self):
+        return self._kin0File
+
+    @kin0File.setter
+    def kin0File(self, value):
+        if not isinstance(value, str):
+            raise TypeError("kin0File must be a string")
+        if not os.path.isfile(value):
+            raise FileNotFoundError(f"KING kinship table '{value}' is not a file")
+        self._kin0File = os.path.abspath(value)
+        self.kinDict = KING.parse_kin0(self._kin0File)
+
+    @property
+    def sampleFile(self):
+        return self._sampleFile
+
+    @sampleFile.setter
+    def sampleFile(self, value):
+        '''
+        A .psam or .fam file recording each sample's family and parents.
+        '''
+        if not isinstance(value, str):
+            raise TypeError("sampleFile must be a string")
+        if not os.path.isfile(value):
+            raise FileNotFoundError(f"Sample file '{value}' is not a file")
+        self._sampleFile = os.path.abspath(value)
+        self.sampleDict = KING.parse_samples(self._sampleFile)
+
+    @property
+    def minKinship(self):
+        return self._minKinship
+
+    @minKinship.setter
+    def minKinship(self, value):
+        '''
+        Minimum kinship for a recorded parent-offspring pair to pass; 0.177 is
+        the lower bound of the first-degree range.
+        '''
+        if not isinstance(value, (int, float)) or not 0 < value <= 0.5:
+            raise ValueError("minKinship must be a number greater than 0 and at most 0.5")
+        self._minKinship = value
+
+    @property
+    def genotyped(self):
+        return { iid for pair in self.kinDict for iid in pair }
+
+    @staticmethod
+    def parse_kin0(kin0File):
+        '''
+        Parameters:
+            kin0File -- a string pointing to a PLINK2 .kin0 file
+        Returns:
+            kinDict -- a dictionary with structure like:
+                       {
+                           frozenset({iid1, iid2}): (kinship, ibs0),
+                           ...
+                       }
+        '''
+        kinDict = {}
+        with open(kin0File, "r") as fileIn:
+            header = fileIn.readline().rstrip("\r\n").lstrip("#").split("\t")
+            id1, id2 = header.index("IID1"), header.index("IID2")
+            kinIndex, ibs0Index = header.index("KINSHIP"), header.index("IBS0")
+            for line in fileIn:
+                sl = line.rstrip("\r\n").split("\t")
+                kinDict[frozenset((sl[id1], sl[id2]))] = (float(sl[kinIndex]), float(sl[ibs0Index]))
+        return kinDict
+
+    @staticmethod
+    def parse_samples(sampleFile):
+        '''
+        Parameters:
+            sampleFile -- a string pointing to a .psam (with a '#'-prefixed header)
+                          or .fam file
+        Returns:
+            sampleDict -- a dictionary with structure like:
+                          {
+                              iid: {"fid": str, "pat": str, "mat": str},
+                              ...
+                          }
+                          where FID defaults to the IID, and parents to '0', when
+                          a .psam lacks those columns
+        '''
+        sampleDict = {}
+        with open(sampleFile, "r") as fileIn:
+            columns = ["FID", "IID", "PAT", "MAT"] # .fam column order
+            for line in fileIn:
+                if line.startswith("#"):
+                    columns = line.rstrip("\r\n").lstrip("#").split("\t")
+                    continue
+                sl = line.split()
+                if sl == []:
+                    continue
+                row = dict(zip(columns, sl))
+                sampleDict[row["IID"]] = { "fid": row.get("FID", row["IID"]),
+                                           "pat": row.get("PAT", "0"), "mat": row.get("MAT", "0") }
+        return sampleDict
+
+    def parent_offspring_pairs(self):
+        '''
+        Returns:
+            pairs -- a list of [iid, fid, role, parent, kinship, ibs0] for every
+                     recorded parent-offspring pair where both are genotyped
+        '''
+        genotyped = self.genotyped
+        pairs = []
+        for iid, info in self.sampleDict.items():
+            if iid not in genotyped:
+                continue
+            for role in ["pat", "mat"]:
+                parent = info[role]
+                if parent == "0" or parent not in genotyped:
+                    continue
+                kinship, ibs0 = self.kinDict[frozenset((iid, parent))]
+                pairs.append([iid, info["fid"], role.upper(), parent, kinship, ibs0])
+        return pairs
+
+    def best_candidate(self, iid, fid):
+        '''
+        Finds the genotyped sample with the highest kinship to iid which is not
+        one of its siblings (i.e., not in its recorded family), as a candidate
+        true parent.
+
+        Returns:
+            candidate -- a list of [candidateIID, kinship, ibs0], or None if
+                         there are no candidates
+        '''
+        siblings = { s for s, info in self.sampleDict.items() if info["fid"] == fid }
+        candidates = [ (self.kinDict[frozenset((iid, other))], other)
+                       for other in self.genotyped
+                       if other != iid and other not in siblings and frozenset((iid, other)) in self.kinDict ]
+        if candidates == []:
+            return None
+        (kinship, ibs0), candidate = max(candidates)
+        return [candidate, kinship, ibs0]
+
+    def check_pedigree(self, outputFileName):
+        '''
+        Writes a per-pair report of recorded parent-offspring relationships, with
+        the best candidate parent for pairs below minKinship.
+
+        Parameters:
+            outputFileName -- a string of the TSV location to write
+        Returns:
+            stats -- a dictionary with keys "pairs", "failed", "medianKinship"
+                     and "medianIBS0" (the medians are None if there are no pairs)
+        '''
+        pairs = self.parent_offspring_pairs()
+        stats = { "pairs": len(pairs), "failed": 0, "medianKinship": None, "medianIBS0": None }
+        if pairs != []:
+            stats["medianKinship"] = statistics.median([ p[4] for p in pairs ])
+            stats["medianIBS0"] = statistics.median([ p[5] for p in pairs ])
+
+        with open(outputFileName, "w") as fileOut:
+            fileOut.write("\t".join(KING.PEDIGREE_CHECK_HEADER) + "\n")
+            for iid, fid, role, parent, kinship, ibs0 in pairs:
+                status = "PASS" if kinship >= self.minKinship else "FAIL"
+                best = ["NA", "NA", "NA"]
+                if status == "FAIL":
+                    stats["failed"] += 1
+                    candidate = self.best_candidate(iid, fid)
+                    if candidate is not None:
+                        best = [candidate[0], f"{candidate[1]:.4f}", f"{candidate[2]:.4f}"]
+                fileOut.write("\t".join([iid, fid, role, parent, f"{kinship:.4f}", f"{ibs0:.4f}", status] + best) + "\n")
+        return stats
 
 class VCFToPLINK(PLINKTool):
     '''
@@ -1113,6 +1419,71 @@ def plink_filter(args):
     print(f"# Samples: {counts.get('samples', 'NA')}")
     print(f"# Variants passing filters: {counts.get('variants', 'NA')}")
     print(f"# Wrote {', '.join(outputFiles)}")
+
+def plink_king(args):
+    '''
+    Handles "plink king" mode of variantopia.
+    '''
+    plink = PLINK(args.plinkPrefix, args.inputFormat)
+    plink.plinkExe = args.plink2
+    plink.threads = args.threads
+    plink.memory = args.memory
+
+    # Estimate kinship
+    kingPrefix = os.path.join(args.outputDirectory, os.path.basename(args.plinkPrefix) + ".king")
+    checkFile = kingPrefix + ".pedigree_check.tsv"
+    heatmapFile = kingPrefix + ".heatmap.png"
+    plink.check_outputs_absent([checkFile, heatmapFile])
+    kin0File = plink.king(kingPrefix, args.extractFile)
+    print(f"# Wrote {kin0File}")
+
+    with plink.work_dir(kingPrefix) as workDir:
+        psamFile = plink.write_psam(os.path.join(workDir, "samples"))
+
+        # Check recorded parent-offspring pairs
+        king = KING(kin0File, psamFile)
+        king.minKinship = args.minKinship
+        stats = king.check_pedigree(checkFile)
+        if stats["pairs"] == 0:
+            print("# No genotyped parent-offspring pairs are recorded in the sample information")
+        else:
+            print(f"# {stats['pairs']} genotyped parent-offspring pairs; median kinship = " +
+                  f"{stats['medianKinship']:.3f}, median IBS0 = {stats['medianIBS0']:.4f}")
+            print(f"# {stats['failed']} parent-offspring pairs fall below kinship {args.minKinship}")
+        print(f"# Wrote {checkFile}")
+
+        # Plot clustered kinship with recorded parents
+        run_rscript("plot_king.R", ["-k", kin0File, "-f", psamFile, "-c", checkFile,
+                                    "-o", kingPrefix, "--title", args.title],
+                    args.rscript, logFile=kingPrefix + ".plot.log")
+    print(f"# Wrote {heatmapFile}")
+
+def plink_pca(args):
+    '''
+    Handles "plink pca" mode of variantopia.
+    '''
+    plink = PLINK(args.plinkPrefix, args.inputFormat)
+    plink.plinkExe = args.plink2
+    plink.threads = args.threads
+    plink.memory = args.memory
+    plink.nonfounders = args.nonfounders
+    plink.npcs = args.npcs
+
+    # Run PCA
+    pcaPrefix = os.path.join(args.outputDirectory, os.path.basename(args.plinkPrefix) + ".pca")
+    plotFiles = [ pcaPrefix + suffix for suffix in [".summary.tsv", ".scree.png", ".pcs.png", ".loadings.png"] ]
+    plink.check_outputs_absent(plotFiles)
+    eigenvecFile, eigenvalFile, loadingsFile = plink.pca(pcaPrefix)
+    print(f"# Wrote {', '.join([eigenvecFile, eigenvalFile, loadingsFile])}")
+
+    # Plot PCA diagnostics, using a .psam to obtain family IDs and phenotypes
+    with plink.work_dir(pcaPrefix) as workDir:
+        psamFile = plink.write_psam(os.path.join(workDir, "samples"))
+        run_rscript("plot_pca.R", ["-e", eigenvecFile, "-v", eigenvalFile, "-f", psamFile,
+                                   "-l", loadingsFile, "-o", pcaPrefix, "--title", args.title,
+                                   "--plot_pcs", str(args.plotPCs)],
+                    args.rscript, logFile=pcaPrefix + ".plot.log")
+    print(f"# Wrote {', '.join(plotFiles)}")
 
 def plink_prune(args):
     '''

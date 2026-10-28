@@ -25,7 +25,7 @@ from modules.validation import validate_m, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
     validate_pan, validate_pan_paint, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
     validate_pan_plot_paint, \
-    validate_pl, validate_pl_filter, validate_pl_prune, validate_pl_qc, \
+    validate_pl, validate_pl_filter, validate_pl_king, validate_pl_pca, validate_pl_prune, validate_pl_qc, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
     validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_msa, validate_v_to_plink, validate_v_to_pos, validate_v_to_table, \
     validate_v_cn, validate_v_cn_plot
@@ -33,7 +33,7 @@ from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_paint, pan_plot_inherit, pan_plot_het
 from modules.pangenomeplot import pan_plot_paint
-from modules.plink import plink_filter, plink_prune, plink_qc
+from modules.plink import plink_filter, plink_king, plink_pca, plink_prune, plink_qc
 from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
@@ -534,6 +534,130 @@ def main():
                                 help="""Optionally, specify the location of the plink2 executable
                                 if it is not discoverable in your system PATH""",
                                 default=None)
+
+    # PLINK > king mode
+    plkingparser = subPlinkParsers.add_parser("king",
+                                              parents=[p],
+                                              add_help=False,
+                                              help="KING kinship and pedigree checks with a clustered heatmap")
+    plkingparser.set_defaults(func=plmain)
+
+    plkingparser.add_argument("-i", dest="plinkPrefix",
+                              required=True,
+                              help="Prefix of PLINK files")
+    plkingparser.add_argument("-if", dest="inputFormat",
+                              required=True,
+                              choices=["pgen", "bgen", "bed"],
+                              help="Specify the input PLINK file type")
+    plkingparser.add_argument("-o", dest="outputDirectory",
+                              required=True,
+                              help="Location to write kinship results, pedigree checks and plots")
+    plkingparser.add_argument("--extract", dest="extractFile",
+                              required=False,
+                              help="""Optionally, restrict kinship estimation to the variants in
+                              a .pvar, .pvar.zst or .bim file (e.g., from 'plink prune') or a
+                              list of variant IDs; recommended unless the input is LD pruned""",
+                              default=None)
+    plkingparser.add_argument("--minKinship", dest="minKinship",
+                              required=False,
+                              type=float,
+                              help="""Optionally, specify the minimum kinship for a recorded
+                              parent-offspring pair to pass; default == 0.177 (the lower bound
+                              of the first-degree range)""",
+                              default=0.177)
+    plkingparser.add_argument("--title", dest="title",
+                              required=False,
+                              help="""Optionally, specify a title for the plot; default is
+                              the base name of the input prefix""",
+                              default=None)
+    plkingparser.add_argument("--threads", dest="threads",
+                              required=False,
+                              type=int,
+                              help="""Optionally, specify the number of threads to use with
+                              PLINK2 tasks; default == 1""",
+                              default=1)
+    plkingparser.add_argument("--mem", dest="memory",
+                              required=False,
+                              help="""Optionally, specify the amount of memory to use with
+                              PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                              '16000000Kb')""",
+                              default="16Gb")
+    plkingparser.add_argument("--plink2", dest="plink2",
+                              required=False,
+                              help="""Optionally, specify the location of the plink2 executable
+                              if it is not discoverable in your system PATH""",
+                              default=None)
+    plkingparser.add_argument("--rscript", dest="rscript",
+                              required=False,
+                              help="""Optionally, specify the location of the Rscript executable
+                              if it is not discoverable in your system PATH; R packages optparse,
+                              data.table and ggplot2 are required""",
+                              default=None)
+
+    # PLINK > pca mode
+    plpcaparser = subPlinkParsers.add_parser("pca",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="PCA of a (pruned) dataset with diagnostic plots")
+    plpcaparser.set_defaults(func=plmain)
+
+    plpcaparser.add_argument("-i", dest="plinkPrefix",
+                             required=True,
+                             help="Prefix of PLINK files")
+    plpcaparser.add_argument("-if", dest="inputFormat",
+                             required=True,
+                             choices=["pgen", "bgen", "bed"],
+                             help="Specify the input PLINK file type")
+    plpcaparser.add_argument("-o", dest="outputDirectory",
+                             required=True,
+                             help="Location to write PCA results and plots")
+    plpcaparser.add_argument("--nonfounders", dest="nonfounders",
+                             required=False,
+                             action="store_true",
+                             help="""Specify whether allele frequencies used to standardise
+                             genotypes should be calculated with all samples being treated
+                             as founders""",
+                             default=False)
+    plpcaparser.add_argument("--npcs", dest="npcs",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of principal components
+                             to compute; default == 20""",
+                             default=20)
+    plpcaparser.add_argument("--plotPCs", dest="plotPCs",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of principal components
+                             to show in the PC pairs and loadings plots; default == 8""",
+                             default=8)
+    plpcaparser.add_argument("--title", dest="title",
+                             required=False,
+                             help="""Optionally, specify a title for the plots; default is
+                             the base name of the input prefix""",
+                             default=None)
+    plpcaparser.add_argument("--threads", dest="threads",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of threads to use with
+                             PLINK2 tasks; default == 1""",
+                             default=1)
+    plpcaparser.add_argument("--mem", dest="memory",
+                             required=False,
+                             help="""Optionally, specify the amount of memory to use with
+                             PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                             '16000000Kb')""",
+                             default="16Gb")
+    plpcaparser.add_argument("--plink2", dest="plink2",
+                             required=False,
+                             help="""Optionally, specify the location of the plink2 executable
+                             if it is not discoverable in your system PATH""",
+                             default=None)
+    plpcaparser.add_argument("--rscript", dest="rscript",
+                             required=False,
+                             help="""Optionally, specify the location of the Rscript executable
+                             if it is not discoverable in your system PATH; R packages optparse,
+                             data.table and ggplot2 are required""",
+                             default=None)
 
     # PLINK > prune mode
     plpruneparser = subPlinkParsers.add_parser("prune",
@@ -1188,6 +1312,14 @@ def plmain(args):
         print("## Filter PLINK dataset ##")
         validate_pl_filter(args)
         plink_filter(args)
+    elif args.plinkMode == "king":
+        print("## KING kinship of PLINK dataset ##")
+        validate_pl_king(args)
+        plink_king(args)
+    elif args.plinkMode == "pca":
+        print("## PCA of PLINK dataset ##")
+        validate_pl_pca(args)
+        plink_pca(args)
     elif args.plinkMode == "prune":
         print("## Prune PLINK dataset ##")
         validate_pl_prune(args)

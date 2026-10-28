@@ -78,3 +78,47 @@ def run_bcftools_index(vcfFile, bcftoolsExe=None):
         raise Exception(("bcftools index encountered an error; have a look " +
                         f'at the stdout ({indexout.decode("utf-8")}) and stderr ' + 
                         f'({indexerr.decode("utf-8")}) to make sense of this.'))
+
+UTILITIES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utilities")
+
+def check_r_packages(packages, rscriptExe):
+    '''
+    Checks that R packages are installed for the given Rscript executable.
+
+    Parameters:
+        packages -- a list of strings of R package names
+        rscriptExe -- path to the Rscript executable
+    Returns:
+        missing -- a list of the packages which are not installed
+    '''
+    rCode = "for (p in commandArgs(TRUE)) if (!requireNamespace(p, quietly=TRUE)) cat(p, '\\n')"
+    result = subprocess.run([rscriptExe, "-e", rCode] + packages,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise Exception(f"Rscript failed to check for R packages; stderr was:\n{result.stderr.decode('utf-8')}")
+    return result.stdout.decode("utf-8").split()
+
+def run_rscript(scriptName, args, rscriptExe, logFile=None):
+    '''
+    Runs an R script from the variantopia utilities directory.
+
+    Parameters:
+        scriptName -- a string of the script's file name within utilities
+        args -- a list of strings of arguments for the script
+        rscriptExe -- path to the Rscript executable
+        logFile -- (OPTIONAL) a string of a location to write the script's
+                   stdout and stderr to
+    '''
+    scriptFile = os.path.join(UTILITIES_DIR, scriptName)
+    if not os.path.isfile(scriptFile):
+        raise FileNotFoundError(f"R script '{scriptFile}' not found")
+
+    cmd = [rscriptExe, scriptFile] + args
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    output = result.stdout.decode("utf-8")
+    if logFile is not None:
+        with open(logFile, "w") as fileOut:
+            fileOut.write(output)
+    if result.returncode != 0:
+        raise Exception(f"{scriptName} failed with exit code {result.returncode}; command was " +
+                        f"'{' '.join(cmd)}'. Output tail:\n" + "\n".join(output.splitlines()[-15:]))
