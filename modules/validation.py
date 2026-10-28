@@ -222,6 +222,108 @@ def validate_pan_plot_paint(args):
     if not any(args.outputFileName.endswith(ext) for ext in ALLOWED_EXTENSIONS):
         raise ValueError(f"Output file (-o {args.outputFileName}) must have one of the following extensions: {', '.join(ALLOWED_EXTENSIONS)}")
 
+# plink mode
+def validate_plink_runtime(args):
+    '''
+    Validation for plink2 runtime arguments shared by "plink" and "vcf to plink"
+    mode commands (--threads, --mem, --plink2, and --tmpDir if present).
+    '''
+    # Validate numeric arguments
+    if args.threads < 1:
+        raise ValueError("--threads must be a positive integer greater than 0.")
+
+    # Validate memory argument
+    args.memory = parse_memory_str(args.memory, "Mb") # plink2 accepts memory in megabyte format
+    args.memory = args.memory.strip("Mb") # but plink2 wants it just as an integer, not with 'Mb' suffix
+
+    # Validate temporary directory location
+    if getattr(args, "tmpDir", None) != None:
+        args.tmpDir = os.path.abspath(args.tmpDir)
+        if not os.path.isdir(args.tmpDir):
+            raise FileNotFoundError(f"Temporary directory location (--tmpDir {args.tmpDir}) does not exist!")
+
+    # Validate plink2 executable
+    if args.plink2 == None:
+        args.plink2 = shutil.which("plink2")
+        if args.plink2 == None:
+            raise FileNotFoundError("plink2 is not discoverable in your system PATH and --plink2 was not specified")
+    else:
+        args.plink2 = os.path.abspath(args.plink2)
+        if not os.path.isfile(args.plink2):
+            raise FileNotFoundError(f"plink2 executable (--plink2 {args.plink2}) does not exist!")
+
+def validate_pl(args):
+    '''
+    Validation for arguments common to all "plink" mode commands.
+    '''
+    # Validate PLINK fileset
+    args.plinkPrefix = os.path.abspath(args.plinkPrefix)
+    if args.inputFormat == "pgen":
+        requiredSuffixes = [".pgen", ".psam"]
+        if not (os.path.isfile(args.plinkPrefix + ".pvar") or os.path.isfile(args.plinkPrefix + ".pvar.zst")):
+            raise FileNotFoundError(f"PLINK fileset (-i {args.plinkPrefix}) has no .pvar or .pvar.zst file!")
+    elif args.inputFormat == "bgen":
+        requiredSuffixes = [".bgen", ".sample"]
+    else:
+        requiredSuffixes = [".bed", ".bim", ".fam"]
+    for suffix in requiredSuffixes:
+        if not os.path.isfile(args.plinkPrefix + suffix):
+            raise FileNotFoundError(f"PLINK fileset (-i {args.plinkPrefix}) has no {suffix} file!")
+
+    # Validate plink2 runtime arguments
+    validate_plink_runtime(args)
+
+def validate_pl_filter(args):
+    '''
+    Validation for arguments used in "plink filter" mode, which "plink prune"
+    mode shares.
+    '''
+    # Validate optional sample removal file
+    if args.removeFile is not None:
+        args.removeFile = os.path.abspath(args.removeFile)
+        if not os.path.isfile(args.removeFile):
+            raise FileNotFoundError(f"Sample removal file (--remove {args.removeFile}) does not exist!")
+
+    # Validate output location
+    args.outputPrefix = os.path.abspath(args.outputPrefix)
+    if not os.path.isdir(os.path.dirname(args.outputPrefix)):
+        raise FileNotFoundError(f"Output directory for -o {args.outputPrefix} does not exist!")
+
+    # Validate numeric arguments
+    if not 0 <= args.geno <= 1:
+        raise ValueError("--geno must be a number from 0 to 1.")
+    if not 0 <= args.maf <= 0.5:
+        raise ValueError("--maf must be a number from 0 to 0.5.")
+
+def validate_pl_prune(args):
+    '''
+    Validation for arguments used in "plink prune" mode.
+    '''
+    # Validate sample and variant selection arguments
+    validate_pl_filter(args)
+
+    # Validate pruning arguments
+    if not 0 < args.r2 <= 1:
+        raise ValueError("--r2 must be a number greater than 0 and at most 1.")
+    if args.windowKb == 0:
+        args.windowKb = None # skip the second pruning stage
+    elif args.windowKb < 0:
+        raise ValueError("--windowKb must be 0 (skip) or a positive integer.")
+    if args.densityCap is not None and args.densityCap <= 0:
+        raise ValueError("--densityCap must be a number greater than 0.")
+
+def validate_pl_qc(args):
+    '''
+    Validation for arguments used in "plink qc" mode.
+    '''
+    # Validate output directory
+    args.outputDirectory = os.path.abspath(args.outputDirectory)
+    if not os.path.exists(args.outputDirectory):
+        os.makedirs(args.outputDirectory, exist_ok=True)
+        print(f"# Created '{args.outputDirectory}' as part of argument validation")
+    elif not os.path.isdir(args.outputDirectory):
+        raise FileExistsError(f"Output directory (-o {args.outputDirectory}) exists but is not a directory!")
+
 # vcf mode
 def validate_v(args):
     '''
@@ -444,48 +546,15 @@ def validate_v_to_plink(args):
         raise FileNotFoundError(f"Output directory for -o {args.outputPrefix} does not exist!")
 
     # Validate numeric arguments
-    if args.threads < 1:
-        raise ValueError("--threads must be a positive integer greater than 0.")
-
-    if args.bgenBits < 1 or args.bgenBits > 32:
-        raise ValueError("--bgenBits must be an integer from 1 to 32.")
     if args.maxAlleles == 0:
         args.maxAlleles = None # no limit
     elif args.maxAlleles < 2:
         raise ValueError("--maxAlleles must be 0 (no limit) or an integer >= 2.")
+    if args.outputFormat == "bed" and args.maxAlleles != 2:
+        raise ValueError("-of bed can only hold biallelic variants, so requires --maxAlleles 2.")
 
-    # Validate compression against the output format
-    FORMAT_COMPRESSION = {
-        "pgen": ["none", "zstd"],
-        "bgen": ["zlib", "zstd"]
-    }
-    if args.compression == None:
-        args.compression = FORMAT_COMPRESSION[args.outputFormat][0]
-    elif not args.compression in FORMAT_COMPRESSION[args.outputFormat]:
-        raise ValueError(f"--compression '{args.compression}' is not compatible with --format '{args.outputFormat}'; " +
-                         f"choose from {FORMAT_COMPRESSION[args.outputFormat]}")
-    if args.compression == "none":
-        args.compression = None
-
-    # Validate temporary directory location
-    if args.tmpDir != None:
-        args.tmpDir = os.path.abspath(args.tmpDir)
-        if not os.path.isdir(args.tmpDir):
-            raise FileNotFoundError(f"Temporary directory location (--tmpDir {args.tmpDir}) does not exist!")
-
-    # Validate memory argument
-    args.memory = parse_memory_str(args.memory, "Mb") # plink2 accepts memory in megabyte format
-    args.memory = args.memory.strip("Mb") # but plink2 wants it just as an integer, not with 'Mb' suffix
-
-    # Validate plink2 executable
-    if args.plink2 == None:
-        args.plink2 = shutil.which("plink2")
-        if args.plink2 == None:
-            raise FileNotFoundError("plink2 is not discoverable in your system PATH and --plink2 was not specified")
-    else:
-        args.plink2 = os.path.abspath(args.plink2)
-        if not os.path.isfile(args.plink2):
-            raise FileNotFoundError(f"plink2 executable (--plink2 {args.plink2}) does not exist!")
+    # Validate plink2 runtime arguments
+    validate_plink_runtime(args)
 
 def validate_v_to_pos(args):
     '''

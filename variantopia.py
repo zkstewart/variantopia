@@ -25,6 +25,7 @@ from modules.validation import validate_m, \
     validate_m_report, validate_m_report_pv, validate_m_report_ps, \
     validate_pan, validate_pan_paint, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
     validate_pan_plot_paint, \
+    validate_pl, validate_pl_filter, validate_pl_prune, validate_pl_qc, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
     validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_msa, validate_v_to_plink, validate_v_to_pos, validate_v_to_table, \
     validate_v_cn, validate_v_cn_plot
@@ -32,6 +33,7 @@ from modules.msa import msa_to_variant_report, msa_to_sequence_report
 from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_paint, pan_plot_inherit, pan_plot_het
 from modules.pangenomeplot import pan_plot_paint
+from modules.plink import plink_filter, plink_prune, plink_qc
 from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
@@ -450,7 +452,222 @@ def main():
     panplotinheritparser.add_argument("-o", dest="outputFileName",
                                       required=True,
                                       help="Location to write output file")
-    
+
+    # PLINK subparser
+    plparser = subparsers.add_parser("plink",
+                                     parents=[p],
+                                     add_help=False,
+                                     help="PLINK dataset handling")
+    plparser.set_defaults(func=plmain)
+
+    subPlinkParsers = plparser.add_subparsers(dest="plinkMode",
+                                              required=True)
+
+    # PLINK > filter mode
+    plfilterparser = subPlinkParsers.add_parser("filter",
+                                                parents=[p],
+                                                add_help=False,
+                                                help="Filter samples and variants of a dataset")
+    plfilterparser.set_defaults(func=plmain)
+
+    plfilterparser.add_argument("-i", dest="plinkPrefix",
+                                required=True,
+                                help="Prefix of PLINK files")
+    plfilterparser.add_argument("-if", dest="inputFormat",
+                                required=True,
+                                choices=["pgen", "bgen", "bed"],
+                                help="Specify the input PLINK file type")
+    plfilterparser.add_argument("-o", dest="outputPrefix",
+                                required=True,
+                                help="Prefix to write the filtered PLINK files to")
+    plfilterparser.add_argument("-of", dest="outputFormat",
+                                required=True,
+                                choices=["pgen", "bgen", "bed"],
+                                help="Specify the output PLINK file type")
+    plfilterparser.add_argument("--nonfounders", dest="nonfounders",
+                                required=False,
+                                action="store_true",
+                                help="""Specify whether allele frequencies used for --maf filtering
+                                should be calculated with all samples being treated as founders""",
+                                default=False)
+    plfilterparser.add_argument("--remove", dest="removeFile",
+                                required=False,
+                                help="""Optionally, provide a file listing samples to exclude
+                                (one IID per line, or FID and IID columns)""",
+                                default=None)
+    plfilterparser.add_argument("--requirePheno", dest="requirePheno",
+                                required=False,
+                                action="store_true",
+                                help="""Optionally, exclude samples with a missing phenotype""",
+                                default=False)
+    plfilterparser.add_argument("--snpsOnly", dest="snpsOnly",
+                                required=False,
+                                action="store_true",
+                                help="""Optionally, retain only SNPs with A/C/G/T alleles""",
+                                default=False)
+    plfilterparser.add_argument("--geno", dest="geno",
+                                required=False,
+                                type=float,
+                                help="""Optionally, specify the maximum variant missingness for
+                                a variant to be retained; default == 0.1""",
+                                default=0.1)
+    plfilterparser.add_argument("--maf", dest="maf",
+                                required=False,
+                                type=float,
+                                help="""Optionally, specify the minimum minor allele frequency for
+                                a variant to be retained; default == 0.01""",
+                                default=0.01)
+    plfilterparser.add_argument("--threads", dest="threads",
+                                required=False,
+                                type=int,
+                                help="""Optionally, specify the number of threads to use with
+                                PLINK2 tasks; default == 1""",
+                                default=1)
+    plfilterparser.add_argument("--mem", dest="memory",
+                                required=False,
+                                help="""Optionally, specify the amount of memory to use with
+                                PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                                '16000000Kb')""",
+                                default="16Gb")
+    plfilterparser.add_argument("--plink2", dest="plink2",
+                                required=False,
+                                help="""Optionally, specify the location of the plink2 executable
+                                if it is not discoverable in your system PATH""",
+                                default=None)
+
+    # PLINK > prune mode
+    plpruneparser = subPlinkParsers.add_parser("prune",
+                                               parents=[p],
+                                               add_help=False,
+                                               help="Prune a dataset of biparental famil(y/ies)")
+    plpruneparser.set_defaults(func=plmain)
+
+    plpruneparser.add_argument("-i", dest="plinkPrefix",
+                               required=True,
+                               help="Prefix of PLINK files")
+    plpruneparser.add_argument("-if", dest="inputFormat",
+                               required=True,
+                               choices=["pgen", "bgen", "bed"],
+                               help="Specify the input PLINK file type")
+    plpruneparser.add_argument("-o", dest="outputPrefix",
+                               required=True,
+                               help="Prefix to write the pruned PLINK files to")
+    plpruneparser.add_argument("-of", dest="outputFormat",
+                               required=True,
+                               choices=["pgen", "bgen", "bed"],
+                               help="Specify the output PLINK file type")
+    plpruneparser.add_argument("--nonfounders", dest="nonfounders",
+                               required=False,
+                               action="store_true",
+                               help="""Specify whether LD should be calculated with
+                               all samples being treated as founders; this also applies to
+                               allele frequencies used for --maf filtering""",
+                               default=False)
+    plpruneparser.add_argument("--remove", dest="removeFile",
+                               required=False,
+                               help="""Optionally, provide a file listing samples to exclude
+                               (one IID per line, or FID and IID columns)""",
+                               default=None)
+    plpruneparser.add_argument("--requirePheno", dest="requirePheno",
+                               required=False,
+                               action="store_true",
+                               help="""Optionally, exclude samples with a missing phenotype""",
+                               default=False)
+    plpruneparser.add_argument("--geno", dest="geno",
+                               required=False,
+                               type=float,
+                               help="""Optionally, specify the maximum variant missingness for
+                               a SNP to be considered for pruning; default == 0.05""",
+                               default=0.05)
+    plpruneparser.add_argument("--maf", dest="maf",
+                               required=False,
+                               type=float,
+                               help="""Optionally, specify the minimum minor allele frequency for
+                               a SNP to be considered for pruning; default == 0.05""",
+                               default=0.05)
+    plpruneparser.add_argument("--r2", dest="r2",
+                               required=False,
+                               type=float,
+                               help="""Optionally, specify the r^2 threshold for both pruning
+                               stages; default == 0.2""",
+                               default=0.2)
+    plpruneparser.add_argument("--windowKb", dest="windowKb",
+                               required=False,
+                               type=int,
+                               help="""Optionally, specify the window size (kb) for the second,
+                               wide-window pruning stage, or 0 to skip it; default == 1000""",
+                               default=1000)
+    plpruneparser.add_argument("--densityCap", dest="densityCap",
+                               required=False,
+                               type=float,
+                               help="""Optionally, cap the number of pruned SNPs in each 1 Mb bin
+                               at this multiple of the genome-wide median bin count (e.g., 3);
+                               default is to not apply a density cap""",
+                               default=None)
+    plpruneparser.add_argument("--threads", dest="threads",
+                               required=False,
+                               type=int,
+                               help="""Optionally, specify the number of threads to use with
+                               PLINK2 tasks; default == 1""",
+                               default=1)
+    plpruneparser.add_argument("--mem", dest="memory",
+                               required=False,
+                               help="""Optionally, specify the amount of memory to use with
+                               PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                               '16000000Kb')""",
+                               default="16Gb")
+    plpruneparser.add_argument("--tmpDir", dest="tmpDir",
+                               required=False,
+                               help="""Optionally, specify the directory in which to create the
+                               temporary working directory; default is the output directory""",
+                               default=None)
+    plpruneparser.add_argument("--keepTmp", dest="keepTmp",
+                               required=False,
+                               action="store_true",
+                               help="""Optionally, keep the temporary working directory and its
+                               intermediate files rather than deleting them""",
+                               default=False)
+    plpruneparser.add_argument("--plink2", dest="plink2",
+                               required=False,
+                               help="""Optionally, specify the location of the plink2 executable
+                               if it is not discoverable in your system PATH""",
+                               default=None)
+
+    # PLINK > QC mode
+    plqcparser = subPlinkParsers.add_parser("qc",
+                                            parents=[p],
+                                            add_help=False,
+                                            help="Generate QC statistics for a PLINK dataset")
+    plqcparser.set_defaults(func=plmain)
+
+    plqcparser.add_argument("-i", dest="plinkPrefix",
+                            required=True,
+                            help="Prefix of PLINK files")
+    plqcparser.add_argument("-if", dest="inputFormat",
+                            required=True,
+                            choices=["pgen", "bgen", "bed"],
+                            help="Specify the input PLINK file type")
+    plqcparser.add_argument("-o", dest="outputDirectory",
+                            required=True,
+                            help="Location to write output QC files")
+    plqcparser.add_argument("--threads", dest="threads",
+                            required=False,
+                            type=int,
+                            help="""Optionally, specify the number of threads to use with
+                            PLINK2 tasks; default == 1""",
+                            default=1)
+    plqcparser.add_argument("--mem", dest="memory",
+                            required=False,
+                            help="""Optionally, specify the amount of memory to use with
+                            PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
+                            '16000000Kb')""",
+                            default="16Gb")
+    plqcparser.add_argument("--plink2", dest="plink2",
+                            required=False,
+                            help="""Optionally, specify the location of the plink2 executable
+                            if it is not discoverable in your system PATH""",
+                            default=None)
+
     # VCF subparser
     vparser = subparsers.add_parser("vcf",
                                     parents=[p],
@@ -786,6 +1003,10 @@ def main():
     vtoplparser.add_argument("-o", dest="outputPrefix",
                              required=True,
                              help="Location to write reformatted file")
+    vtoplparser.add_argument("-of", dest="outputFormat",
+                             required=True,
+                             choices=["pgen", "bgen", "bed"],
+                             help="Specify the output PLINK file type")
     vtoplparser.add_argument("--chrom", dest="chromMap",
                              required=False,
                              help="""Optionally, provide a two-column TSV file relating
@@ -810,26 +1031,6 @@ def main():
                              PLINK2 tasks; default == '16Gb' (equivalent to '16000Mb' or
                              '16000000Kb')""",
                              default="16Gb")
-    vtoplparser.add_argument("--format", dest="outputFormat",
-                             required=False,
-                             choices=["pgen", "bgen"],
-                             help="""Optionally, specify the output file format; default
-                             == 'pgen'""",
-                             default="pgen")
-    vtoplparser.add_argument("--compression", dest="compression",
-                             required=False,
-                             choices=["none", "zstd", "zlib"],
-                             help="""Optionally, specify the output compression. For pgen,
-                             'none' or 'zstd' (compresses the .pvar); for bgen, 'zlib'
-                             (writes bgen v1.2) or 'zstd' (writes bgen v1.3); default
-                             == 'none' for pgen and 'zlib' for bgen""",
-                             default=None)
-    vtoplparser.add_argument("--bgenBits", dest="bgenBits",
-                             required=False,
-                             type=int,
-                             help="""Optionally, specify the bits of precision per genotype
-                             probability in bgen output; default == 8""",
-                             default=8)
     vtoplparser.add_argument("--maxAlleles", dest="maxAlleles",
                              required=False,
                              type=int,
@@ -923,6 +1124,10 @@ def main():
         print("## variantopia.py - pangenome file handling ##")
         validate_pan(args)
         panmain(args)
+    elif args.mode == "plink":
+        print("## variantopia.py - PLINK file handling ##")
+        validate_pl(args)
+        plmain(args)
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
@@ -976,6 +1181,23 @@ def panmain(args):
             print("## Circos plot of painted progeny haplotypes ##")
             validate_pan_plot_paint(args)
             pan_plot_paint(args)
+
+def plmain(args):
+    # Split into sub-mode-specific functions
+    if args.plinkMode == "filter":
+        print("## Filter PLINK dataset ##")
+        validate_pl_filter(args)
+        plink_filter(args)
+    elif args.plinkMode == "prune":
+        print("## Prune PLINK dataset ##")
+        validate_pl_prune(args)
+        plink_prune(args)
+    elif args.plinkMode == "qc":
+        print("## PLINK dataset sample QC ##")
+        validate_pl_qc(args)
+        plink_qc(args)
+    
+    print("PLINK handling complete!")
 
 def vmain(args):
     # Split into sub-mode-specific functions

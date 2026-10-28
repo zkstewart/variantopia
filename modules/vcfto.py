@@ -19,7 +19,7 @@ from Bio import SeqIO
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vcftopia import VCFTopia
 from parsing import GzCapableWriter
-from plink import PLINK
+from plink import VCFToPLINK
 
 def vcf_to_cf(args):
     '''
@@ -184,27 +184,23 @@ def vcf_to_geno(args):
 
 def vcf_to_plink(args):
     '''
-    Handles "reformat plink" mode of variantopia.
+    Handles "vcf to plink" mode of variantopia.
     '''
-    plink = PLINK(args.vcfFile, args.famFile, args.outputPrefix)
-    plink.plinkExe = args.plink2
-    plink.chromMap = args.chromMap
-    plink.sampleMap = args.sampleMap
-    plink.allowMissing = args.allowMissing
-    plink.outputFormat = args.outputFormat # set before compression, which is validated against it
-    plink.compression = args.compression
-    plink.bgenBits = args.bgenBits
-    plink.maxAlleles = args.maxAlleles
-    plink.threads = args.threads
-    plink.memory = args.memory
-    plink.tmpDir = args.tmpDir
-    plink.keepTmp = args.keepTmp
+    converter = VCFToPLINK(args.vcfFile, args.famFile, args.outputPrefix)
+    converter.plinkExe = args.plink2
+    converter.chromMap = args.chromMap
+    converter.sampleMap = args.sampleMap
+    converter.allowMissing = args.allowMissing
+    converter.outputFormat = args.outputFormat # compression and bgenBits use format defaults
+    converter.maxAlleles = args.maxAlleles
+    converter.threads = args.threads
+    converter.memory = args.memory
+    converter.tmpDir = args.tmpDir
+    converter.keepTmp = args.keepTmp
 
-    # Convert VCF and report on samples
-    outputFiles = plink.convert()
+    # Convert VCF
+    outputFiles = converter.convert()
     print(f"# Wrote {', '.join(outputFiles)}")
-    qcFile = plink.sample_qc()
-    print(f"# Wrote sample QC report to {qcFile}")
 
 def vcf_to_pos(args):
     '''

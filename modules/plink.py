@@ -13,14 +13,747 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, sys, shutil, subprocess, tempfile
+import os, re, sys, shutil, subprocess, tempfile
+from collections import Counter
+from contextlib import contextmanager
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_2col_tsv_as_dict
 
-class PLINK:
+class PLINKTool:
     '''
-    Encapsulates the conversion of a VCF into a PLINK2 fileset (pgen or bgen) with
+    Settings and behaviour shared by all plink2-running classes: the plink2
+    executable and its resources, a temporary working directory for intermediate
+    files, and the format of any PLINK2 fileset that is written.
+
+    Properties are given sensible defaults and can be adjusted prior to calling
+    the methods of child classes.
+    '''
+    OUTPUT_FORMATS = ["pgen", "bgen", "bed"]
+    COMPRESSION_TYPES = { # first value is the default for that format
+        "pgen": ["zstd", None], # zstd compresses the .pvar ('vzs')
+        "bgen": ["zlib", "zstd"], # zlib == bgen v1.2, zstd == bgen v1.3
+        "bed": [None]
+    }
+    BGEN_VERSIONS = { "zlib": "1.2", "zstd": "1.3" }
+
+    def __init__(self):
+        self.outputFormat = "pgen" # also sets the default compression
+        self.bgenBits = 8
+        self.threads = 1
+        self.memory = 16000
+        self.tmpDir = None
+        self.keepTmp = False
+        self._plinkExe = shutil.which("plink2") # may be None; validated when plink2 is first run
+
+    @property
+    def outputFormat(self):
+        return self._outputFormat
+
+    @outputFormat.setter
+    def outputFormat(self, value):
+        if value not in PLINKTool.OUTPUT_FORMATS:
+            raise ValueError(f"outputFormat must be one of {PLINKTool.OUTPUT_FORMATS}")
+        self._outputFormat = value
+
+        # Reset compression to the format default if it is now incompatible
+        if getattr(self, "_compression", "unset") not in PLINKTool.COMPRESSION_TYPES[value]:
+            self._compression = PLINKTool.COMPRESSION_TYPES[value][0]
+
+    @property
+    def compression(self):
+        return self._compression
+
+    @compression.setter
+    def compression(self, value):
+        '''
+        For pgen, 'zstd' (Zstd-compressed .pvar) or None; for bgen, 'zlib'
+        (bgen v1.2) or 'zstd' (bgen v1.3); for bed, None.
+        '''
+        allowed = PLINKTool.COMPRESSION_TYPES[self.outputFormat]
+        if value not in allowed:
+            raise ValueError(f"compression for '{self.outputFormat}' output must be one of {allowed}")
+        self._compression = value
+
+    @property
+    def bgenBits(self):
+        return self._bgenBits
+
+    @bgenBits.setter
+    def bgenBits(self, value):
+        '''
+        Bits of precision per probability in bgen output; 8 is lossless for
+        hardcalls and is widely supported (e.g., by SAIGE and REGENIE).
+        '''
+        if not isinstance(value, int) or not 1 <= value <= 32:
+            raise ValueError("bgenBits must be an integer from 1 to 32")
+        self._bgenBits = value
+
+    @property
+    def threads(self):
+        return self._threads
+
+    @threads.setter
+    def threads(self, value):
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("threads must be a positive integer")
+        self._threads = value
+
+    @property
+    def memory(self):
+        return self._memory
+
+    @memory.setter
+    def memory(self, value):
+        '''
+        Memory for plink2 in megabytes, as an integer (or integer-like string).
+        '''
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("memory must be an integer number of megabytes")
+        if value < 1:
+            raise ValueError("memory must be a positive integer")
+        self._memory = value
+
+    @property
+    def tmpDir(self):
+        return self._tmpDir
+
+    @tmpDir.setter
+    def tmpDir(self, value):
+        '''
+        Parent directory for the temporary working directory; None (default)
+        uses the output directory, since intermediate files can be large.
+        '''
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError("tmpDir must be None or a string")
+            if not os.path.isdir(value):
+                raise FileNotFoundError(f"Temporary directory location '{value}' does not exist")
+            value = os.path.abspath(value)
+        self._tmpDir = value
+
+    @property
+    def keepTmp(self):
+        return self._keepTmp
+
+    @keepTmp.setter
+    def keepTmp(self, value):
+        if not isinstance(value, bool):
+            raise TypeError("keepTmp must be a boolean")
+        self._keepTmp = value
+
+    @property
+    def plinkExe(self):
+        return self._plinkExe
+
+    @plinkExe.setter
+    def plinkExe(self, value):
+        if not isinstance(value, str):
+            raise TypeError("plinkExe must be a string")
+        if not os.path.isfile(value):
+            raise FileNotFoundError(f"plink2 executable not found at '{value}'")
+        self._plinkExe = os.path.abspath(value)
+
+    def output_files(self, outputPrefix):
+        '''
+        The files of a fileset written by write_fileset() to outputPrefix for the
+        current outputFormat and compression.
+        '''
+        if self.outputFormat == "pgen":
+            pvarSuffix = ".pvar.zst" if self.compression == "zstd" else ".pvar"
+            suffixes = [".pgen", pvarSuffix, ".psam"]
+        elif self.outputFormat == "bgen":
+            suffixes = [".bgen", ".sample"]
+        else:
+            suffixes = [".bed", ".bim", ".fam"]
+        return [ outputPrefix + suffix for suffix in suffixes ]
+
+    def check_outputs_absent(self, outputFiles):
+        existing = [ f for f in outputFiles if os.path.exists(f) ]
+        if existing != []:
+            raise FileExistsError(f"Output file(s) already exist: {existing}")
+
+    def run_plink(self, args, outPrefix):
+        '''
+        Runs plink2 with the given arguments, adding --threads, --memory,
+        --allow-extra-chr and --out.
+
+        Parameters:
+            args -- a list of strings of plink2 arguments
+            outPrefix -- a string of the --out prefix for this run
+        '''
+        if self.plinkExe is None:
+            raise FileNotFoundError("plink2 is not discoverable in your system PATH and plinkExe was not set")
+        cmd = [self.plinkExe, "--threads", str(self.threads), "--memory", str(self.memory),
+               "--allow-extra-chr"] + args + ["--out", outPrefix]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            logTail = ""
+            if os.path.isfile(outPrefix + ".log"):
+                with open(outPrefix + ".log", "r") as logIn:
+                    logTail = "".join(logIn.readlines()[-15:])
+            raise Exception(f"plink2 failed with exit code {result.returncode}; command was '{' '.join(cmd)}'. " +
+                            f"Log tail:\n{logTail}\nstderr:\n{result.stderr.decode('utf-8')}")
+
+    @contextmanager
+    def work_dir(self, outputPrefix):
+        '''
+        Context manager yielding a temporary working directory, created within
+        tmpDir (or alongside outputPrefix) and removed afterwards unless keepTmp.
+        '''
+        workDir = tempfile.mkdtemp(prefix=".variantopia_plink_",
+                                   dir=self.tmpDir or os.path.dirname(outputPrefix))
+        try:
+            yield workDir
+        finally:
+            if not self.keepTmp:
+                shutil.rmtree(workDir, ignore_errors=True)
+
+    def write_fileset(self, args, outputPrefix, workDir, sortVars=False):
+        '''
+        Writes a fileset in the configured outputFormat and compression.
+
+        Parameters:
+            args -- a list of strings of plink2 arguments specifying the input
+                    and any filters to apply
+            outputPrefix -- a string of the output fileset's prefix
+            workDir -- a string pointing to the working directory; only used
+                       when sorting variants for bgen or bed output
+            sortVars -- a boolean indicating whether variants should be sorted
+        Returns:
+            outputFiles -- a list of the output files written
+        '''
+        if self.outputFormat == "pgen":
+            makeArgs = (["--sort-vars"] if sortVars else []) + ["--make-pgen"] + \
+                       (["vzs"] if self.compression == "zstd" else [])
+            self.run_plink(args + makeArgs, outputPrefix)
+        else:
+            # --sort-vars requires --make-pgen, so sort into the working directory first
+            if sortVars:
+                sortedPrefix = os.path.join(workDir, "sorted")
+                self.run_plink(args + ["--sort-vars", "--make-pgen"], sortedPrefix)
+                args = ["--pfile", sortedPrefix]
+            if self.outputFormat == "bgen":
+                self.run_plink(args + ["--export", f"bgen-{PLINKTool.BGEN_VERSIONS[self.compression]}",
+                                       f"bits={self.bgenBits}", "ref-first"], outputPrefix)
+            else:
+                self.run_plink(args + ["--make-bed"], outputPrefix)
+        return self.output_files(outputPrefix)
+
+    @staticmethod
+    def parse_log_counts(logFile):
+        '''
+        Parses the numbers of samples and variants remaining after filtering from
+        a plink2 log file.
+
+        Parameters:
+            logFile -- a string pointing to a plink2 .log file
+        Returns:
+            counts -- a dictionary with structure like:
+                      {
+                          "samples": int,
+                          "variants": int
+                      }
+        '''
+        with open(logFile, "r") as fileIn:
+            log = " ".join(fileIn.read().split()) # plink2 wraps long lines
+        counts = {}
+        for key, pattern in [["samples", r"(\d+) samples \([^)]*\) remaining after main filters"],
+                             ["variants", r"(\d+) variants remaining after main filters"]]:
+            match = re.findall(pattern, log)
+            if match != []:
+                counts[key] = int(match[-1])
+        return counts
+
+class PLINK(PLINKTool):
+    '''
+    Encapsulates an existing PLINK fileset (pgen, bgen or bed) for QC reporting,
+    sample and variant filtering, and LD pruning.
+
+    Sample and variant selection properties (removeFile, requirePheno,
+    nonfounders, snpsOnly, geno, maf) apply to both filter() and prune(); they
+    default to no filtering and can be adjusted prior to calling either method.
+    Pruning properties are given sensible defaults. Intermediate files are written to a temporary directory which is
+    removed afterwards (unless keepTmp is True), so only the final outputs are
+    written to the output location.
+
+    Example:
+        plink = PLINK("input/prefix", "pgen")
+        plink.sample_qc("output/prefix")
+        plink.nonfounders = True
+        plink.requirePheno = True
+        plink.geno, plink.maf = 0.1, 0.01
+        plink.filter("output/prefix.qc")
+        plink.snpsOnly = True
+        plink.geno, plink.maf = 0.05, 0.05
+        plink.densityCap = 3
+        plink.prune("output/prefix.pruned")
+    '''
+    INPUT_FORMATS = ["pgen", "bgen", "bed"]
+
+    def __init__(self, prefix, fileFormat="pgen"):
+        super().__init__()
+        self._set_fileset(prefix, fileFormat)
+
+        # Set default values for adjustable sample and variant selection properties
+        self.removeFile = None
+        self.requirePheno = False
+        self.nonfounders = False
+        self.snpsOnly = False
+        self.geno = None
+        self.maf = None
+
+        # Set default values for adjustable pruning properties
+        self.r2 = 0.2
+        self.windowVariants = 50
+        self.stepVariants = 5
+        self.windowKb = 1000
+        self.densityCap = None
+        self.densityBinSize = 1000000
+        self.filterCounts = {}
+        self.pruneCounts = {}
+
+    def _set_fileset(self, prefix, fileFormat):
+        '''
+        Validates that the fileset exists, noting whether a pgen fileset has a
+        Zstd-compressed .pvar.
+        '''
+        if fileFormat not in PLINK.INPUT_FORMATS:
+            raise ValueError(f"fileFormat must be one of {PLINK.INPUT_FORMATS}")
+        if not isinstance(prefix, str):
+            raise TypeError("prefix must be a string")
+        prefix = os.path.abspath(prefix)
+
+        inputCompression = None
+        if fileFormat == "pgen":
+            if os.path.isfile(prefix + ".pvar.zst"):
+                inputCompression = "zstd"
+                suffixes = [".pgen", ".pvar.zst", ".psam"]
+            else:
+                suffixes = [".pgen", ".pvar", ".psam"]
+        elif fileFormat == "bgen":
+            suffixes = [".bgen", ".sample"]
+        else:
+            suffixes = [".bed", ".bim", ".fam"]
+        missing = [ prefix + s for s in suffixes if not os.path.isfile(prefix + s) ]
+        if missing != []:
+            raise FileNotFoundError(f"{fileFormat} fileset '{prefix}' is missing file(s): {missing}")
+
+        self._prefix = prefix
+        self._fileFormat = fileFormat
+        self._inputCompression = inputCompression
+
+    @property
+    def prefix(self):
+        return self._prefix
+
+    @property
+    def fileFormat(self):
+        return self._fileFormat
+
+    @property
+    def inputArgs(self):
+        '''
+        plink2 arguments for reading this fileset.
+        '''
+        if self.fileFormat == "pgen":
+            args = ["--pfile", self.prefix]
+            if self._inputCompression == "zstd":
+                args.append("vzs")
+        elif self.fileFormat == "bgen":
+            args = ["--bgen", self.prefix + ".bgen", "ref-first",
+                    "--sample", self.prefix + ".sample"]
+        else:
+            args = ["--bfile", self.prefix]
+        return args
+
+    @property
+    def removeFile(self):
+        return self._removeFile
+
+    @removeFile.setter
+    def removeFile(self, value):
+        '''
+        None, or a file of samples to exclude (one IID per line, or FID IID).
+        '''
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError("removeFile must be None or a string")
+            if not os.path.isfile(value):
+                raise FileNotFoundError(f"Sample removal file '{value}' is not a file")
+            value = os.path.abspath(value)
+        self._removeFile = value
+
+    @property
+    def requirePheno(self):
+        return self._requirePheno
+
+    @requirePheno.setter
+    def requirePheno(self, value):
+        '''
+        If True, samples with a missing phenotype are excluded.
+        '''
+        if not isinstance(value, bool):
+            raise TypeError("requirePheno must be a boolean")
+        self._requirePheno = value
+
+    @property
+    def nonfounders(self):
+        return self._nonfounders
+
+    @nonfounders.setter
+    def nonfounders(self, value):
+        '''
+        If True, all samples are treated as founders for allele frequencies (and
+        hence MAF filtering) and LD calculation. This suits family-based designs
+        where most samples have parents recorded in the fileset.
+        '''
+        if not isinstance(value, bool):
+            raise TypeError("nonfounders must be a boolean")
+        self._nonfounders = value
+
+    @property
+    def snpsOnly(self):
+        return self._snpsOnly
+
+    @snpsOnly.setter
+    def snpsOnly(self, value):
+        '''
+        If True, only SNPs with A/C/G/T alleles are retained; this suits pruning,
+        since indel calls are noisier.
+        '''
+        if not isinstance(value, bool):
+            raise TypeError("snpsOnly must be a boolean")
+        self._snpsOnly = value
+
+    @property
+    def geno(self):
+        return self._geno
+
+    @geno.setter
+    def geno(self, value):
+        '''
+        Maximum variant missingness for a variant to be retained, or None for
+        no filter.
+        '''
+        if value is not None and (not isinstance(value, (int, float)) or not 0 <= value <= 1):
+            raise ValueError("geno must be None or a number from 0 to 1")
+        self._geno = value
+
+    @property
+    def maf(self):
+        return self._maf
+
+    @maf.setter
+    def maf(self, value):
+        '''
+        Minimum minor allele frequency for a variant to be retained, or None for
+        no filter.
+        '''
+        if value is not None and (not isinstance(value, (int, float)) or not 0 <= value <= 0.5):
+            raise ValueError("maf must be None or a number from 0 to 0.5")
+        self._maf = value
+
+    @property
+    def r2(self):
+        return self._r2
+
+    @r2.setter
+    def r2(self, value):
+        '''
+        r^2 threshold for both pruning stages.
+        '''
+        if not isinstance(value, (int, float)) or not 0 < value <= 1:
+            raise ValueError("r2 must be a number greater than 0 and at most 1")
+        self._r2 = value
+
+    @property
+    def windowVariants(self):
+        return self._windowVariants
+
+    @windowVariants.setter
+    def windowVariants(self, value):
+        '''
+        Window size (in variants) for the first, local pruning stage.
+        '''
+        if not isinstance(value, int) or value < 2:
+            raise ValueError("windowVariants must be an integer >= 2")
+        self._windowVariants = value
+
+    @property
+    def stepVariants(self):
+        return self._stepVariants
+
+    @stepVariants.setter
+    def stepVariants(self, value):
+        '''
+        Window step size (in variants) for the first, local pruning stage.
+        '''
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("stepVariants must be a positive integer")
+        self._stepVariants = value
+
+    @property
+    def windowKb(self):
+        return self._windowKb
+
+    @windowKb.setter
+    def windowKb(self, value):
+        '''
+        Window size (in kb) for the second, wide physical pruning stage, or None
+        to skip it. LD in family-based populations extends over long distances
+        that the first stage's variant-count windows do not span.
+        '''
+        if value is not None and (not isinstance(value, int) or value < 1):
+            raise ValueError("windowKb must be None or a positive integer")
+        self._windowKb = value
+
+    @property
+    def densityCap(self):
+        return self._densityCap
+
+    @densityCap.setter
+    def densityCap(self, value):
+        '''
+        None to skip density capping, or a multiple of the genome-wide median
+        number of pruned SNPs per bin; bins holding more than this are thinned
+        to it by keeping evenly spaced SNPs. Regions with noisy genotypes can
+        retain many pruned SNPs whose pairwise r^2 is low but which jointly
+        dominate a PC.
+        '''
+        if value is not None and (not isinstance(value, (int, float)) or value <= 0):
+            raise ValueError("densityCap must be None or a number greater than 0")
+        self._densityCap = value
+
+    @property
+    def densityBinSize(self):
+        return self._densityBinSize
+
+    @densityBinSize.setter
+    def densityBinSize(self, value):
+        '''
+        Bin size (in bp) used for density capping.
+        '''
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("densityBinSize must be a positive integer")
+        self._densityBinSize = value
+
+    @staticmethod
+    def count_lines(fileName, skipHeader=False):
+        with open(fileName, "r") as fileIn:
+            return sum( 1 for line in fileIn if not (skipHeader and line.startswith("#")) )
+
+    @staticmethod
+    def clear_parents(psamFile, outputFileName):
+        '''
+        Writes a copy of a .psam with paternal and maternal IDs set to '0', so
+        that plink2 treats every sample as a founder. LD pruning has no
+        --nonfounders override, and requires at least 50 founders.
+
+        Parameters:
+            psamFile -- a string pointing to the .psam file
+            outputFileName -- a string of the location to write the copy
+        '''
+        with open(psamFile, "r") as fileIn, open(outputFileName, "w") as fileOut:
+            header = fileIn.readline()
+            fileOut.write(header)
+            columns = header.rstrip("\r\n").lstrip("#").split("\t")
+            parentIndices = [ columns.index(c) for c in ["PAT", "MAT"] if c in columns ]
+            for line in fileIn:
+                sl = line.rstrip("\r\n").split("\t")
+                for i in parentIndices:
+                    sl[i] = "0"
+                fileOut.write("\t".join(sl) + "\n")
+
+    def density_cap(self, pvarFile, pruneInFile, outputFileName):
+        '''
+        Thins any bin holding more than densityCap x the median bin count of
+        pruned variants down to that cap, keeping evenly spaced variants so the
+        result is deterministic.
+
+        Parameters:
+            pvarFile -- a string pointing to an uncompressed .pvar file which
+                        contains (at least) the pruned variants
+            pruneInFile -- a string pointing to a file of pruned variant IDs
+            outputFileName -- a string of the location to write the IDs of
+                              variants retained after capping
+        Returns:
+            medianBin -- an integer of the median number of variants per bin
+            binCap -- an integer of the maximum number of variants per bin
+        '''
+        with open(pruneInFile, "r") as fileIn:
+            pruned = set( line.strip() for line in fileIn if line.strip() != "" )
+
+        # Assign pruned variants to bins in .pvar order
+        variantBins = []
+        with open(pvarFile, "r") as fileIn:
+            for line in fileIn:
+                if line.startswith("#"):
+                    continue
+                chrom, pos, varId = line.split("\t", 3)[:3]
+                if varId in pruned:
+                    variantBins.append([varId, f"{chrom}:{int(pos) // self.densityBinSize}"])
+
+        binCounts = Counter( b for _, b in variantBins )
+        sortedCounts = sorted(binCounts.values())
+        medianBin = sortedCounts[(len(sortedCounts) + 1) // 2 - 1] # lower median if even
+        binCap = int(medianBin * self.densityCap)
+
+        # Keep a variant when it crosses an integer step of cap/n along its bin
+        seen = Counter()
+        with open(outputFileName, "w") as fileOut:
+            for varId, b in variantBins:
+                seen[b] += 1
+                n, i = binCounts[b], seen[b]
+                if n <= binCap or (i * binCap) // n != ((i - 1) * binCap) // n:
+                    fileOut.write(varId + "\n")
+        return medianBin, binCap
+
+    def selection_args(self):
+        '''
+        plink2 arguments for reading this fileset with the configured sample and
+        variant selection applied.
+        '''
+        args = self.inputArgs + (["--nonfounders"] if self.nonfounders else [])
+        if self.removeFile is not None:
+            args += ["--remove", self.removeFile]
+        if self.requirePheno:
+            args.append("--require-pheno")
+        if self.snpsOnly:
+            args += ["--snps-only", "just-acgt"]
+        if self.geno is not None:
+            args += ["--geno", str(self.geno)]
+        if self.maf is not None:
+            args += ["--maf", str(self.maf)]
+        return args
+
+    def check_output_prefix(self, outputPrefix):
+        outputPrefix = os.path.abspath(outputPrefix)
+        if not os.path.isdir(os.path.dirname(outputPrefix)):
+            raise FileNotFoundError(f"Output directory '{os.path.dirname(outputPrefix)}' does not exist")
+        self.check_outputs_absent(self.output_files(outputPrefix))
+        return outputPrefix
+
+    def filter(self, outputPrefix):
+        '''
+        Writes a fileset of the selected samples (removeFile, requirePheno) and
+        variants (snpsOnly, geno, maf), e.g., as the variant set for association
+        testing. Retained sample and variant counts are recorded in the
+        filterCounts property.
+
+        Parameters:
+            outputPrefix -- a string of the output fileset's prefix
+        Returns:
+            outputFiles -- a list of the output files written
+        '''
+        outputPrefix = self.check_output_prefix(outputPrefix)
+        outputFiles = self.write_fileset(self.selection_args(), outputPrefix, workDir=None)
+        self.filterCounts = PLINKTool.parse_log_counts(outputPrefix + ".log")
+        return outputFiles
+
+    def prune(self, outputPrefix):
+        '''
+        Writes a fileset of LD-pruned, high-quality variants (e.g., for a GRM,
+        PCA, or kinship estimation). Samples and variants are selected as for
+        filter() (typically with snpsOnly and stricter geno and maf) then pruned in
+        two stages (a local window of windowVariants, then a wide window of
+        windowKb), and optionally density capped. Per-stage variant counts are
+        recorded in the pruneCounts property.
+
+        Parameters:
+            outputPrefix -- a string of the output fileset's prefix
+        Returns:
+            outputFiles -- a list of the output files written
+        '''
+        outputPrefix = self.check_output_prefix(outputPrefix)
+        nonfounderArgs = ["--nonfounders"] if self.nonfounders else []
+
+        with self.work_dir(outputPrefix) as workDir:
+            # Select samples and pruning candidate variants
+            filteredPrefix = os.path.join(workDir, "filtered")
+            self.run_plink(self.selection_args() + ["--make-pgen"], filteredPrefix)
+            self.pruneCounts = { "samples": PLINK.count_lines(filteredPrefix + ".psam", skipHeader=True),
+                                 "filtered": PLINK.count_lines(filteredPrefix + ".pvar", skipHeader=True) }
+
+            # Prune using a .psam without parents if all samples are to be founders;
+            # the output retains the original pedigree information
+            psamFile = filteredPrefix + ".psam"
+            if self.nonfounders:
+                psamFile = os.path.join(workDir, "founders.psam")
+                PLINK.clear_parents(filteredPrefix + ".psam", psamFile)
+            ldArgs = ["--pgen", filteredPrefix + ".pgen", "--pvar", filteredPrefix + ".pvar",
+                      "--psam", psamFile] + nonfounderArgs
+
+            stage1Prefix = os.path.join(workDir, "stage1")
+            self.run_plink(ldArgs + ["--indep-pairwise", str(self.windowVariants),
+                                     str(self.stepVariants), str(self.r2)], stage1Prefix)
+            pruneIn = stage1Prefix + ".prune.in"
+            self.pruneCounts["stage1"] = PLINK.count_lines(pruneIn)
+
+            if self.windowKb is not None:
+                stage2Prefix = os.path.join(workDir, "stage2")
+                self.run_plink(ldArgs + ["--extract", pruneIn, "--indep-pairwise",
+                                         f"{self.windowKb}kb", "1", str(self.r2)], stage2Prefix)
+                pruneIn = stage2Prefix + ".prune.in"
+                self.pruneCounts["stage2"] = PLINK.count_lines(pruneIn)
+
+            if self.densityCap is not None:
+                cappedFile = os.path.join(workDir, "capped.prune.in")
+                medianBin, binCap = self.density_cap(filteredPrefix + ".pvar", pruneIn, cappedFile)
+                pruneIn = cappedFile
+                self.pruneCounts["densityMedianBin"] = medianBin
+                self.pruneCounts["densityBinCap"] = binCap
+                self.pruneCounts["densityCapped"] = PLINK.count_lines(pruneIn)
+
+            return self.write_fileset(["--pfile", filteredPrefix, "--extract", pruneIn],
+                                      outputPrefix, workDir)
+
+    def sample_qc(self, outputPrefix):
+        '''
+        Writes a per-sample QC report of missingness (all variants) and
+        heterozygosity rate (SNPs only, since indel calls are noisier), alongside
+        the plink2 reports it was derived from.
+
+        Parameters:
+            outputPrefix -- a string of the output prefix; files are written to
+                            '<outputPrefix>.sample_qc.{tsv,smiss,scount}'
+        Returns:
+            outputFiles -- a list of the output files written
+        '''
+        outputPrefix = os.path.abspath(outputPrefix) + ".sample_qc"
+        outputFiles = [ outputPrefix + suffix for suffix in [".tsv", ".smiss", ".scount"] ]
+        self.check_outputs_absent(outputFiles)
+
+        with self.work_dir(outputPrefix) as workDir:
+            qcPrefix = os.path.join(workDir, "sample_qc")
+            self.run_plink(self.inputArgs + ["--missing", "sample-only"], qcPrefix)
+            self.run_plink(self.inputArgs + ["--snps-only", "just-acgt", "--sample-counts"], qcPrefix)
+
+            # Combine the plink2 reports
+            def parse_report(fileName):
+                with open(fileName, "r") as fileIn:
+                    header = fileIn.readline().rstrip("\r\n").lstrip("#").split("\t")
+                    return [ dict(zip(header, line.rstrip("\r\n").split("\t"))) for line in fileIn ]
+            smiss = parse_report(qcPrefix + ".smiss")
+            scount = { row["IID"]: row for row in parse_report(qcPrefix + ".scount") }
+
+            with open(outputFiles[0], "w") as fileOut:
+                fileOut.write("FID\tIID\tF_MISS\tHET_RATE\n")
+                for row in smiss:
+                    counts = scount[row["IID"]]
+                    called = int(counts["HOM_REF_CT"]) + int(counts["HOM_ALT_SNP_CT"]) + int(counts["HET_SNP_CT"])
+                    hetRate = f"{int(counts['HET_SNP_CT']) / called:.6g}" if called > 0 else "NA"
+                    fileOut.write(f"{row.get('FID', row['IID'])}\t{row['IID']}\t{row['F_MISS']}\t{hetRate}\n")
+            shutil.move(qcPrefix + ".smiss", outputFiles[1])
+            shutil.move(qcPrefix + ".scount", outputFiles[2])
+
+        return outputFiles
+
+class VCFToPLINK(PLINKTool):
+    '''
+    Encapsulates the conversion of a VCF into a PLINK fileset (pgen, bgen or bed) with
     harmonised chromosome names, unique variant IDs, and sample information taken
     from a .fam file matched by sample IID (rather than by row order, which is how
     plink2 --vcf --fam would otherwise assign it).
@@ -30,22 +763,16 @@ class PLINK:
     removed afterwards (unless keepTmp is True).
 
     Example:
-        plink = PLINK("input.vcf.gz", "samples.fam", "output/prefix")
-        plink.chromMap = "chrom_map.tsv"
-        plink.threads = 8
-        plink.convert()
-        plink.sample_qc()
+        converter = VCFToPLINK("input.vcf.gz", "samples.fam", "output/prefix")
+        converter.chromMap = "chrom_map.tsv"
+        converter.threads = 8
+        converter.convert()
     '''
-    OUTPUT_FORMATS = ["pgen", "bgen"]
-    COMPRESSION_TYPES = { # first value is the default for that format
-        "pgen": [None, "zstd"], # zstd compresses the .pvar ('vzs')
-        "bgen": ["zlib", "zstd"] # zlib == bgen v1.2, zstd == bgen v1.3
-    }
-    BGEN_VERSIONS = { "zlib": "1.2", "zstd": "1.3" }
     HALF_CALL_MODES = ["error", "haploid", "missing", "reference"]
     PSAM_HEADER = ["#FID", "IID", "PAT", "MAT", "SEX", "PHENO1"]
 
     def __init__(self, vcfFile, famFile, outputPrefix):
+        super().__init__()
         self.vcfFile = vcfFile
         self.famFile = famFile
         self.outputPrefix = outputPrefix
@@ -54,17 +781,9 @@ class PLINK:
         self.chromMap = None
         self.sampleMap = None
         self.allowMissing = False
-        self.outputFormat = "pgen"
-        self.compression = None
-        self.bgenBits = 8
         self.maxAlleles = 2
         self.varIdFormat = "@:#:$r:$a"
         self.halfCall = "missing"
-        self.threads = 1
-        self.memory = 16000
-        self.tmpDir = None
-        self.keepTmp = False
-        self._plinkExe = shutil.which("plink2") # may be None; validated when plink2 is first run
 
     @property
     def vcfFile(self):
@@ -168,49 +887,6 @@ class PLINK:
         self._allowMissing = value
 
     @property
-    def outputFormat(self):
-        return self._outputFormat
-
-    @outputFormat.setter
-    def outputFormat(self, value):
-        if value not in PLINK.OUTPUT_FORMATS:
-            raise ValueError(f"outputFormat must be one of {PLINK.OUTPUT_FORMATS}")
-        self._outputFormat = value
-
-        # Reset compression to the format default if it is now incompatible
-        if getattr(self, "_compression", "unset") not in PLINK.COMPRESSION_TYPES[value]:
-            self._compression = PLINK.COMPRESSION_TYPES[value][0]
-
-    @property
-    def compression(self):
-        return self._compression
-
-    @compression.setter
-    def compression(self, value):
-        '''
-        For pgen, None or 'zstd' (Zstd-compressed .pvar); for bgen, 'zlib'
-        (bgen v1.2) or 'zstd' (bgen v1.3).
-        '''
-        allowed = PLINK.COMPRESSION_TYPES[self.outputFormat]
-        if value not in allowed:
-            raise ValueError(f"compression for '{self.outputFormat}' output must be one of {allowed}")
-        self._compression = value
-
-    @property
-    def bgenBits(self):
-        return self._bgenBits
-
-    @bgenBits.setter
-    def bgenBits(self, value):
-        '''
-        Bits of precision per probability in bgen output; 8 is lossless for
-        hardcalls and is widely supported (e.g., by SAIGE and REGENIE).
-        '''
-        if not isinstance(value, int) or not 1 <= value <= 32:
-            raise ValueError("bgenBits must be an integer from 1 to 32")
-        self._bgenBits = value
-
-    @property
     def maxAlleles(self):
         return self._maxAlleles
 
@@ -246,102 +922,16 @@ class PLINK:
         '''
         How plink2 handles half-calls (e.g., './1') via --vcf-half-call.
         '''
-        if value not in PLINK.HALF_CALL_MODES:
-            raise ValueError(f"halfCall must be one of {PLINK.HALF_CALL_MODES}")
+        if value not in VCFToPLINK.HALF_CALL_MODES:
+            raise ValueError(f"halfCall must be one of {VCFToPLINK.HALF_CALL_MODES}")
         self._halfCall = value
-
-    @property
-    def threads(self):
-        return self._threads
-
-    @threads.setter
-    def threads(self, value):
-        if not isinstance(value, int) or value < 1:
-            raise ValueError("threads must be a positive integer")
-        self._threads = value
-
-    @property
-    def memory(self):
-        return self._memory
-
-    @memory.setter
-    def memory(self, value):
-        '''
-        Memory for plink2 in megabytes, as an integer (or integer-like string).
-        '''
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            raise ValueError("memory must be an integer number of megabytes")
-        if value < 1:
-            raise ValueError("memory must be a positive integer")
-        self._memory = value
-
-    @property
-    def tmpDir(self):
-        return self._tmpDir
-
-    @tmpDir.setter
-    def tmpDir(self, value):
-        '''
-        Parent directory for the temporary working directory; None (default)
-        uses the output directory, since intermediate files can be large.
-        '''
-        if value is not None:
-            if not isinstance(value, str):
-                raise TypeError("tmpDir must be None or a string")
-            if not os.path.isdir(value):
-                raise FileNotFoundError(f"Temporary directory location '{value}' does not exist")
-            value = os.path.abspath(value)
-        self._tmpDir = value
-
-    @property
-    def keepTmp(self):
-        return self._keepTmp
-
-    @keepTmp.setter
-    def keepTmp(self, value):
-        if not isinstance(value, bool):
-            raise TypeError("keepTmp must be a boolean")
-        self._keepTmp = value
-
-    @property
-    def plinkExe(self):
-        return self._plinkExe
-
-    @plinkExe.setter
-    def plinkExe(self, value):
-        if not isinstance(value, str):
-            raise TypeError("plinkExe must be a string")
-        if not os.path.isfile(value):
-            raise FileNotFoundError(f"plink2 executable not found at '{value}'")
-        self._plinkExe = os.path.abspath(value)
 
     @property
     def outputFiles(self):
         '''
         The files that convert() writes for the current outputFormat and compression.
         '''
-        if self.outputFormat == "pgen":
-            pvarSuffix = ".pvar.zst" if self.compression == "zstd" else ".pvar"
-            suffixes = [".pgen", pvarSuffix, ".psam"]
-        else:
-            suffixes = [".bgen", ".sample"]
-        return [ self.outputPrefix + suffix for suffix in suffixes ]
-
-    @property
-    def inputArgs(self):
-        '''
-        plink2 arguments for reading the output fileset back in, e.g., for sample_qc().
-        '''
-        if self.outputFormat == "pgen":
-            args = ["--pfile", self.outputPrefix]
-            if self.compression == "zstd":
-                args.append("vzs")
-        else:
-            args = ["--bgen", self.outputPrefix + ".bgen", "ref-first",
-                    "--sample", self.outputPrefix + ".sample"]
-        return args
+        return self.output_files(self.outputPrefix)
 
     @staticmethod
     def get_max_allele_length(pvarFile):
@@ -391,28 +981,6 @@ class PLINK:
                     raise ValueError(f"Duplicate IID '{sl[1]}' in fam file '{famFile}'")
                 famDict[sl[1]] = sl
         return famDict
-
-    def run_plink(self, args, outPrefix):
-        '''
-        Runs plink2 with the given arguments, adding --threads, --memory,
-        --allow-extra-chr and --out.
-
-        Parameters:
-            args -- a list of strings of plink2 arguments
-            outPrefix -- a string of the --out prefix for this run
-        '''
-        if self.plinkExe is None:
-            raise FileNotFoundError("plink2 is not discoverable in your system PATH and plinkExe was not set")
-        cmd = [self.plinkExe, "--threads", str(self.threads), "--memory", str(self.memory),
-               "--allow-extra-chr"] + args + ["--out", outPrefix]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            logTail = ""
-            if os.path.isfile(outPrefix + ".log"):
-                with open(outPrefix + ".log", "r") as logIn:
-                    logTail = "".join(logIn.readlines()[-15:])
-            raise Exception(f"plink2 failed with exit code {result.returncode}; command was '{' '.join(cmd)}'. " +
-                            f"Log tail:\n{logTail}\nstderr:\n{result.stderr.decode('utf-8')}")
 
     def import_vcf(self, workDir):
         '''
@@ -474,7 +1042,7 @@ class PLINK:
         Parameters:
             psamFile -- a string pointing to the .psam file; it is rewritten in place
         '''
-        famDict = PLINK.parse_fam(self.famFile)
+        famDict = VCFToPLINK.parse_fam(self.famFile)
 
         # Read the IIDs in .psam order
         with open(psamFile, "r") as fileIn:
@@ -493,101 +1061,102 @@ class PLINK:
         # Write the updated .psam
         tmpFile = psamFile + ".tmp"
         with open(tmpFile, "w") as fileOut:
-            fileOut.write("\t".join(PLINK.PSAM_HEADER) + "\n")
+            fileOut.write("\t".join(VCFToPLINK.PSAM_HEADER) + "\n")
             for iid in iids:
                 fid, _, pat, mat, sex, pheno = famDict.get(iid, [iid, iid, "0", "0", "0", "-9"])
                 sex = sex if sex in ["1", "2"] else "NA"
                 fileOut.write("\t".join([fid, iid, pat, mat, sex, pheno]) + "\n")
         os.replace(tmpFile, psamFile)
 
-    def write_output(self, rawPrefix, workDir):
-        '''
-        Writes the final output fileset from the adjusted intermediate fileset,
-        setting variant IDs and sorting variants.
-
-        Parameters:
-            rawPrefix -- a string of the adjusted intermediate fileset's prefix
-            workDir -- a string pointing to the working directory
-        '''
-        args = ["--pfile", rawPrefix]
-        if self.varIdFormat is not None:
-            maxAlleleLength = PLINK.get_max_allele_length(rawPrefix + ".pvar")
-            args += ["--set-all-var-ids", self.varIdFormat,
-                     "--new-id-max-allele-len", str(max(maxAlleleLength, 1))]
-
-        if self.outputFormat == "pgen":
-            makeArgs = ["--sort-vars", "--make-pgen"] + (["vzs"] if self.compression == "zstd" else [])
-            self.run_plink(args + makeArgs, self.outputPrefix)
-        else:
-            # --sort-vars requires --make-pgen, so sort into the working directory first
-            sortedPrefix = os.path.join(workDir, "sorted")
-            self.run_plink(args + ["--sort-vars", "--make-pgen"], sortedPrefix)
-            self.run_plink(["--pfile", sortedPrefix,
-                            "--export", f"bgen-{PLINK.BGEN_VERSIONS[self.compression]}",
-                            f"bits={self.bgenBits}", "ref-first"], self.outputPrefix)
-
     def convert(self):
         '''
         Converts the VCF into the configured PLINK2 output fileset, via a
-        temporary working directory.
+        temporary working directory, setting variant IDs and sorting variants.
 
         Returns:
             outputFiles -- a list of the output files written
         '''
-        existing = [ f for f in self.outputFiles if os.path.exists(f) ]
-        if existing != []:
-            raise FileExistsError(f"Output file(s) already exist: {existing}")
+        self.check_outputs_absent(self.outputFiles)
 
-        workDir = tempfile.mkdtemp(prefix=".variantopia_plink_",
-                                   dir=self.tmpDir or os.path.dirname(self.outputPrefix))
-        try:
+        with self.work_dir(self.outputPrefix) as workDir:
             rawPrefix = self.import_vcf(workDir)
             if self.chromMap is not None:
                 self.rename_chromosomes(rawPrefix + ".pvar")
             self.update_psam(rawPrefix + ".psam")
-            self.write_output(rawPrefix, workDir)
-        finally:
-            if not self.keepTmp:
-                shutil.rmtree(workDir, ignore_errors=True)
 
-        return self.outputFiles
+            args = ["--pfile", rawPrefix]
+            if self.varIdFormat is not None:
+                maxAlleleLength = VCFToPLINK.get_max_allele_length(rawPrefix + ".pvar")
+                args += ["--set-all-var-ids", self.varIdFormat,
+                         "--new-id-max-allele-len", str(max(maxAlleleLength, 1))]
+            return self.write_fileset(args, self.outputPrefix, workDir, sortVars=True)
 
-    def sample_qc(self, outputFileName=None):
-        '''
-        Writes a per-sample QC report of missingness (all variants) and
-        heterozygosity rate (SNPs only, since indel calls are noisier) for the
-        output fileset produced by convert().
+def plink_filter(args):
+    '''
+    Handles "plink filter" mode of variantopia.
+    '''
+    plink = PLINK(args.plinkPrefix, args.inputFormat)
+    plink.plinkExe = args.plink2
+    plink.threads = args.threads
+    plink.memory = args.memory
+    plink.outputFormat = args.outputFormat
+    plink.removeFile = args.removeFile
+    plink.requirePheno = args.requirePheno
+    plink.nonfounders = args.nonfounders
+    plink.snpsOnly = args.snpsOnly
+    plink.geno = args.geno
+    plink.maf = args.maf
 
-        Parameters:
-            outputFileName -- (OPTIONAL) a string of the report location; default
-                              is '<outputPrefix>.sample_qc.tsv'
-        Returns:
-            outputFileName -- a string of the report location
-        '''
-        if outputFileName is None:
-            outputFileName = self.outputPrefix + ".sample_qc.tsv"
-        missing = [ f for f in self.outputFiles if not os.path.isfile(f) ]
-        if missing != []:
-            raise FileNotFoundError(f"Output file(s) {missing} not found; run convert() first")
+    # Filter and report on what remains
+    outputFiles = plink.filter(args.outputPrefix)
+    counts = plink.filterCounts
+    print(f"# Samples: {counts.get('samples', 'NA')}")
+    print(f"# Variants passing filters: {counts.get('variants', 'NA')}")
+    print(f"# Wrote {', '.join(outputFiles)}")
 
-        qcPrefix = self.outputPrefix + ".sample_qc"
-        self.run_plink(self.inputArgs + ["--missing", "sample-only"], qcPrefix)
-        self.run_plink(self.inputArgs + ["--snps-only", "just-acgt", "--sample-counts"], qcPrefix)
+def plink_prune(args):
+    '''
+    Handles "plink prune" mode of variantopia.
+    '''
+    plink = PLINK(args.plinkPrefix, args.inputFormat)
+    plink.plinkExe = args.plink2
+    plink.threads = args.threads
+    plink.memory = args.memory
+    plink.tmpDir = args.tmpDir
+    plink.keepTmp = args.keepTmp
+    plink.outputFormat = args.outputFormat
+    plink.removeFile = args.removeFile
+    plink.requirePheno = args.requirePheno
+    plink.nonfounders = args.nonfounders
+    plink.snpsOnly = True # indel calls are noisier
+    plink.geno = args.geno
+    plink.maf = args.maf
+    plink.r2 = args.r2
+    plink.windowKb = args.windowKb
+    plink.densityCap = args.densityCap
 
-        # Combine the plink2 reports
-        def parse_report(fileName):
-            with open(fileName, "r") as fileIn:
-                header = fileIn.readline().rstrip("\r\n").lstrip("#").split("\t")
-                return [ dict(zip(header, line.rstrip("\r\n").split("\t"))) for line in fileIn ]
-        smiss = parse_report(qcPrefix + ".smiss")
-        scount = { row["IID"]: row for row in parse_report(qcPrefix + ".scount") }
+    # Prune and report on each stage
+    outputFiles = plink.prune(args.outputPrefix)
+    counts = plink.pruneCounts
+    print(f"# Samples: {counts['samples']}")
+    print(f"# Variants passing filters: {counts['filtered']}")
+    print(f"# Stage 1 pruned variants: {counts['stage1']}")
+    if "stage2" in counts:
+        print(f"# Stage 2 pruned variants: {counts['stage2']}")
+    if "densityCapped" in counts:
+        print(f"# Density cap: median {counts['densityMedianBin']} variants per bin; cap {counts['densityBinCap']} per bin")
+        print(f"# Density-capped variants: {counts['densityCapped']}")
+    print(f"# Wrote {', '.join(outputFiles)}")
 
-        with open(outputFileName, "w") as fileOut:
-            fileOut.write("FID\tIID\tF_MISS\tHET_RATE\n")
-            for row in smiss:
-                counts = scount[row["IID"]]
-                called = int(counts["HOM_REF_CT"]) + int(counts["HOM_ALT_SNP_CT"]) + int(counts["HET_SNP_CT"])
-                hetRate = f"{int(counts['HET_SNP_CT']) / called:.6g}" if called > 0 else "NA"
-                fileOut.write(f"{row.get('FID', row['IID'])}\t{row['IID']}\t{row['F_MISS']}\t{hetRate}\n")
+def plink_qc(args):
+    '''
+    Handles "plink qc" mode of variantopia.
+    '''
+    plink = PLINK(args.plinkPrefix, args.inputFormat)
+    plink.plinkExe = args.plink2
+    plink.threads = args.threads
+    plink.memory = args.memory
 
-        return outputFileName
+    # Report on samples
+    outputFiles = plink.sample_qc(os.path.join(args.outputDirectory, os.path.basename(args.plinkPrefix)))
+    print(f"# Wrote {', '.join(outputFiles)}")
