@@ -21,6 +21,41 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_2col_tsv_as_dict
 from subprocess_runners import run_rscript
 
+FAM_COLUMNS = ["FID", "IID", "PAT", "MAT", "SEX", "PHENO1"]
+
+def parse_sample_info(sampleFile):
+    '''
+    Parses a .psam (with a '#'-prefixed header) or .fam file.
+
+    Parameters:
+        sampleFile -- a string pointing to a .psam or .fam file
+    Returns:
+        sampleOrder -- a list of IIDs in file order
+        sampleDict -- a dictionary with structure like:
+                      {
+                          iid: {column: value, ...},
+                          ...
+                      }
+                      where .fam columns are named as in a variantopia .psam
+                      (FID, IID, PAT, MAT, SEX, PHENO1)
+    '''
+    sampleOrder, sampleDict = [], {}
+    with open(sampleFile, "r") as fileIn:
+        columns = FAM_COLUMNS
+        for line in fileIn:
+            if line.startswith("#"):
+                columns = line.rstrip("\r\n").lstrip("#").split("\t")
+                continue
+            sl = line.split()
+            if sl == []:
+                continue
+            row = dict(zip(columns, sl))
+            if row["IID"] in sampleDict:
+                raise ValueError(f"Duplicate IID '{row['IID']}' in '{sampleFile}'")
+            sampleOrder.append(row["IID"])
+            sampleDict[row["IID"]] = row
+    return sampleOrder, sampleDict
+
 class PLINKTool:
     '''
     Settings and behaviour shared by all plink2-running classes: the plink2
@@ -974,20 +1009,9 @@ class KING:
                           where FID defaults to the IID, and parents to '0', when
                           a .psam lacks those columns
         '''
-        sampleDict = {}
-        with open(sampleFile, "r") as fileIn:
-            columns = ["FID", "IID", "PAT", "MAT"] # .fam column order
-            for line in fileIn:
-                if line.startswith("#"):
-                    columns = line.rstrip("\r\n").lstrip("#").split("\t")
-                    continue
-                sl = line.split()
-                if sl == []:
-                    continue
-                row = dict(zip(columns, sl))
-                sampleDict[row["IID"]] = { "fid": row.get("FID", row["IID"]),
-                                           "pat": row.get("PAT", "0"), "mat": row.get("MAT", "0") }
-        return sampleDict
+        _, rows = parse_sample_info(sampleFile)
+        return { iid: { "fid": row.get("FID", iid), "pat": row.get("PAT", "0"), "mat": row.get("MAT", "0") }
+                 for iid, row in rows.items() }
 
     def parent_offspring_pairs(self):
         '''

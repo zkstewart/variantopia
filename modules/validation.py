@@ -18,7 +18,8 @@ from matplotlib.colors import is_color_like
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_text_list, parse_memory_str
-from subprocess_runners import check_r_packages
+from subprocess_runners import check_r_packages, r_package_version
+from saige import SAIGE, SAIGE_SUBMODULE_DIR, parse_pc_set
 from annotarium_importers import import_annotarium_gff3, import_annotarium_domains
 
 # msa mode
@@ -273,23 +274,30 @@ def validate_rscript(args, packages):
     if missing != []:
         raise ModuleNotFoundError(f"R package(s) {missing} are not installed for Rscript '{args.rscript}'")
 
+def validate_plink_fileset(prefix, fileFormat, flag):
+    '''
+    Validation for a PLINK fileset argument, returning its absolute prefix.
+    '''
+    prefix = os.path.abspath(prefix)
+    if fileFormat == "pgen":
+        requiredSuffixes = [".pgen", ".psam"]
+        if not (os.path.isfile(prefix + ".pvar") or os.path.isfile(prefix + ".pvar.zst")):
+            raise FileNotFoundError(f"PLINK fileset ({flag} {prefix}) has no .pvar or .pvar.zst file!")
+    elif fileFormat == "bgen":
+        requiredSuffixes = [".bgen", ".sample"]
+    else:
+        requiredSuffixes = [".bed", ".bim", ".fam"]
+    for suffix in requiredSuffixes:
+        if not os.path.isfile(prefix + suffix):
+            raise FileNotFoundError(f"PLINK fileset ({flag} {prefix}) has no {suffix} file!")
+    return prefix
+
 def validate_pl(args):
     '''
     Validation for arguments common to all "plink" mode commands.
     '''
     # Validate PLINK fileset
-    args.plinkPrefix = os.path.abspath(args.plinkPrefix)
-    if args.inputFormat == "pgen":
-        requiredSuffixes = [".pgen", ".psam"]
-        if not (os.path.isfile(args.plinkPrefix + ".pvar") or os.path.isfile(args.plinkPrefix + ".pvar.zst")):
-            raise FileNotFoundError(f"PLINK fileset (-i {args.plinkPrefix}) has no .pvar or .pvar.zst file!")
-    elif args.inputFormat == "bgen":
-        requiredSuffixes = [".bgen", ".sample"]
-    else:
-        requiredSuffixes = [".bed", ".bim", ".fam"]
-    for suffix in requiredSuffixes:
-        if not os.path.isfile(args.plinkPrefix + suffix):
-            raise FileNotFoundError(f"PLINK fileset (-i {args.plinkPrefix}) has no {suffix} file!")
+    args.plinkPrefix = validate_plink_fileset(args.plinkPrefix, args.inputFormat, "-i")
 
     # Validate plink2 runtime arguments
     validate_plink_runtime(args)
@@ -395,6 +403,120 @@ def validate_pl_qc(args):
     '''
     # Validate output directory
     validate_pl_output_directory(args)
+
+# saige mode
+def validate_saige_executables(args):
+    '''
+    Validation for the --saigeDir and --saigeRscript arguments of "saige" mode
+    commands, checking that the installed SAIGE package matches the version of
+    the SAIGE scripts.
+    '''
+    # Validate SAIGE directory; default to the submodule, then $SAIGEDIR
+    if args.saigeDir == None:
+        for candidate in [SAIGE_SUBMODULE_DIR, os.environ.get("SAIGEDIR")]:
+            if candidate != None and os.path.isfile(os.path.join(candidate, "extdata", "step1_fitNULLGLMM.R")):
+                args.saigeDir = candidate
+                break
+        else:
+            raise FileNotFoundError("SAIGE scripts were not found; initialise variantopia's SAIGE submodule with " +
+                                    f"'git -C {os.path.dirname(os.path.dirname(SAIGE_SUBMODULE_DIR))} submodule " +
+                                    "update --init external/SAIGE', or specify --saigeDir")
+    args.saigeDir = os.path.abspath(args.saigeDir)
+    for script in SAIGE.SCRIPTS.values():
+        if not os.path.isfile(os.path.join(args.saigeDir, "extdata", script)):
+            raise FileNotFoundError(f"SAIGE directory (--saigeDir {args.saigeDir}) has no extdata/{script} file!")
+
+    # Validate SAIGE's Rscript; default to the SAIGE directory's pixi environment, then PATH
+    if args.saigeRscript == None:
+        pixiRscript = os.path.join(args.saigeDir, ".pixi", "envs", "default", "bin", "Rscript")
+        args.saigeRscript = pixiRscript if os.path.isfile(pixiRscript) else shutil.which("Rscript")
+        if args.saigeRscript == None:
+            raise FileNotFoundError(f"No pixi environment was found in '{args.saigeDir}', Rscript is not " +
+                                    "discoverable in your system PATH, and --saigeRscript was not specified")
+    else:
+        args.saigeRscript = os.path.abspath(args.saigeRscript)
+        if not os.path.isfile(args.saigeRscript):
+            raise FileNotFoundError(f"Rscript executable (--saigeRscript {args.saigeRscript}) does not exist!")
+
+    # Validate SAIGE R packages and version
+    missing = check_r_packages(["SAIGE", "optparse", "data.table"], args.saigeRscript)
+    if missing != []:
+        raise ModuleNotFoundError(f"R package(s) {missing} are not installed for Rscript '{args.saigeRscript}'")
+    with open(os.path.join(args.saigeDir, "DESCRIPTION"), "r") as fileIn:
+        scriptVersion = next( line.split(":", 1)[1].strip() for line in fileIn if line.startswith("Version:") )
+    installedVersion = r_package_version("SAIGE", args.saigeRscript)
+    if installedVersion != scriptVersion:
+        raise ValueError(f"SAIGE scripts in '{args.saigeDir}' are version {scriptVersion}, but the SAIGE package " +
+                         f"for Rscript '{args.saigeRscript}' is version {installedVersion}")
+
+def validate_sa(args):
+    '''
+    Validation for arguments common to all "saige" mode commands.
+    '''
+    # Validate PLINK fileset and plink2 runtime arguments
+    validate_pl(args)
+
+    # Validate PCA file
+    args.eigenvecFile = os.path.abspath(args.eigenvecFile)
+    if not os.path.isfile(args.eigenvecFile):
+        raise FileNotFoundError(f"PCA eigenvector file (-e {args.eigenvecFile}) does not exist!")
+
+    # Validate output directory
+    validate_pl_output_directory(args)
+
+    # Validate numeric arguments
+    if args.jobs < 1:
+        raise ValueError("--jobs must be a positive integer greater than 0.")
+    if not 0 <= args.relCutoff <= 1:
+        raise ValueError("--relCutoff must be a number from 0 to 1.")
+    if args.grmMarkers < 1:
+        raise ValueError("--grmMarkers must be a positive integer greater than 0.")
+    if not 0 <= args.minMAF <= 0.5:
+        raise ValueError("--minMAF must be a number from 0 to 0.5.")
+    if args.minMAC < 0:
+        raise ValueError("--minMAC must be a number >= 0.")
+
+    # Validate SAIGE scripts and R
+    validate_saige_executables(args)
+
+def validate_sa_calibrate(args):
+    '''
+    Validation for arguments used in "saige calibrate" mode.
+    '''
+    # Validate PC sets; e.g., '2' and '1,2' are the same set
+    pcSets = [ frozenset(parse_pc_set(pcSet)[0]) for pcSet in args.pcSets ]
+    if len(set(pcSets)) != len(pcSets):
+        raise ValueError(f"--pcSets values must be unique sets of PCs; got {args.pcSets}")
+
+    # Validate plot title
+    if args.title == None:
+        args.title = os.path.basename(args.plinkPrefix)
+
+    # Validate Rscript and the packages needed by plot_calibration.R
+    validate_rscript(args, ["optparse", "data.table", "ggplot2"])
+
+def validate_sa_gwas(args):
+    '''
+    Validation for arguments used in "saige gwas" mode.
+    '''
+    # Validate GRM fileset
+    args.grmPrefix = validate_plink_fileset(args.grmPrefix, args.grmFormat, "-g")
+
+    # Validate PC covariates
+    if args.calibrationFile != None:
+        args.calibrationFile = os.path.abspath(args.calibrationFile)
+        if not os.path.isfile(args.calibrationFile):
+            raise FileNotFoundError(f"PC calibration file (--calibration {args.calibrationFile}) does not exist!")
+    elif args.pcs != None:
+        parse_pc_set(args.pcs, asList=True)
+    elif args.npcs < 0:
+        raise ValueError("--npcs must be an integer >= 0.")
+
+    # Validate covariate variants
+    if args.covarSNPs != None:
+        args.covarSNPs = [ v.strip() for v in args.covarSNPs.split(",") if v.strip() != "" ]
+        if args.covarSNPs == [] or len(set(args.covarSNPs)) != len(args.covarSNPs):
+            raise ValueError("--covarSNPs must be a comma-separated list of unique variant IDs.")
 
 # vcf mode
 def validate_v(args):

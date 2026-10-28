@@ -122,3 +122,19 @@ def run_rscript(scriptName, args, rscriptExe, logFile=None):
     if result.returncode != 0:
         raise Exception(f"{scriptName} failed with exit code {result.returncode}; command was " +
                         f"'{' '.join(cmd)}'. Output tail:\n" + "\n".join(output.splitlines()[-15:]))
+
+def r_package_version(package, rscriptExe):
+    '''
+    Gets the version of an installed R package for the given Rscript executable.
+
+    Parameters:
+        package -- a string of the R package name
+        rscriptExe -- path to the Rscript executable
+    Returns:
+        version -- a string of the package version
+    '''
+    result = subprocess.run([rscriptExe, "-e", "cat(as.character(packageVersion(commandArgs(TRUE)[1])))", package],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise Exception(f"Rscript failed to get the version of R package '{package}'; stderr was:\n{result.stderr.decode('utf-8')}")
+    return result.stdout.decode("utf-8").strip()

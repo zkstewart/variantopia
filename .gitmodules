@@ -1,0 +1,5 @@
+[submodule "external/SAIGE"]
+	path = external/SAIGE
+	url = https://github.com/saigegit/SAIGE
+	shallow = true
+	ignore = untracked

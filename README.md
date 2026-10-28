@@ -56,6 +56,17 @@ variantopia is written in Python and requires a modern version 3. It makes use o
 
 It also calls upon the external programs **tabix** and **bcftools** (https://www.htslib.org)
 
+The `plink` and `vcf to plink` modes call upon **plink2** (https://www.cog-genomics.org/plink/2.0/), and plotting within `plink` and `saige` modes calls upon **R** with the packages optparse, data.table and ggplot2.
+
+### SAIGE (for `saige` modes)
+The `saige` modes run **SAIGE** (https://github.com/saigegit/SAIGE); if you use them, please cite SAIGE. variantopia pins a compatible SAIGE version as a git submodule at `external/SAIGE`, which is not downloaded by a plain clone. Obtain it by cloning with `--recurse-submodules`, or within an existing clone:
+
+```
+git submodule update --init external/SAIGE
+```
+
+The SAIGE R package must also be installed, at the same version as the submodule. SAIGE provides a pixi environment for this (see its `pixi.toml` and `docker/Dockerfile`); if that environment is built within `external/SAIGE`, variantopia finds its Rscript automatically. Otherwise, specify an Rscript with SAIGE installed using `--saigeRscript`, or another SAIGE checkout using `--saigeDir`. variantopia checks that the installed SAIGE package version matches the SAIGE scripts it runs.
+
 variantopia has been developed on Linux and within Windows Subsystem for Linux (WSL); it is not currently compatible with plain Windows.
 
 ## Installation suggestions
