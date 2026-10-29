@@ -475,6 +475,8 @@ def validate_sa(args):
         raise ValueError("--minMAF must be a number from 0 to 0.5.")
     if args.minMAC < 0:
         raise ValueError("--minMAC must be a number >= 0.")
+    if args.noInvNormalize and args.traitType != "quantitative":
+        raise ValueError("--noInvNormalize only applies to --traitType quantitative.")
 
     # Validate SAIGE scripts and R
     validate_saige_executables(args)
@@ -538,9 +540,17 @@ def validate_sa_summarise(args):
         [args.regionGap, "--regionGap", lambda x: x >= 0, "an integer >= 0"],
         [args.topN, "--topN", lambda x: x >= 1, "a positive integer"],
         [args.clumpKb, "--clumpKb", lambda x: x >= 1, "a positive integer"],
+        [args.supportKb, "--supportKb", lambda x: x >= 0, "an integer >= 0"],
         [args.radius, "--radius", lambda x: x >= 0, "an integer >= 0"]]:
         if value != None and not isValid(value):
             raise ValueError(f"{flag} must be {description}.")
+    if args.linkR2 != None and args.linkR2 != "auto":
+        try:
+            args.linkR2 = float(args.linkR2)
+        except ValueError:
+            raise ValueError("--linkR2 must be 'auto' or a number from 0 to 1.")
+        if not 0 <= args.linkR2 <= 1:
+            raise ValueError("--linkR2 must be 'auto' or a number from 0 to 1.")
     if args.suggestive != None and args.clumpP2 != None and args.clumpP2 < args.suggestive:
         raise ValueError("--clumpP2 must be >= --suggestive.")
 

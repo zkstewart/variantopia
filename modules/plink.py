@@ -16,6 +16,7 @@
 import os, re, sys, shutil, statistics, subprocess, tempfile
 from collections import Counter
 from contextlib import contextmanager
+import numpy as np
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_2col_tsv_as_dict
@@ -841,6 +842,83 @@ class PLINK(PLINKTool):
                 fileOut.write(line.split()[idIndex] + "\n")
         return idFile
 
+    def keep_file(self, keepIIDs, workDir):
+        '''
+        Writes a plink2 --keep file of samples in this fileset, with FIDs where
+        the fileset has them.
+
+        Parameters:
+            keepIIDs -- a list of IIDs of the samples to keep
+            workDir -- a string pointing to the working directory
+        Returns:
+            keepFile -- a string of the --keep file's location
+        '''
+        sampleOrder, sampleDict = parse_sample_info(self.write_psam(os.path.join(workDir, "samples")))
+        missing = [ iid for iid in keepIIDs if iid not in sampleDict ]
+        if missing != []:
+            raise ValueError(f"{len(missing)} sample(s) to keep are not in '{self.prefix}' (e.g., '{missing[0]}')")
+        keepFile = os.path.join(workDir, "keep.txt")
+        hasFID = "FID" in sampleDict[sampleOrder[0]]
+        with open(keepFile, "w") as fileOut:
+            fileOut.write("#FID\tIID\n" if hasFID else "#IID\n")
+            for iid in keepIIDs:
+                fileOut.write((f"{sampleDict[iid]['FID']}\t" if hasFID else "") + iid + "\n")
+        return keepFile
+
+    def thin_variants(self, count, workDir, seed=1):
+        '''
+        Draws a reproducible random sample of this fileset's variants.
+
+        Parameters:
+            count -- an integer of the number of variants to sample; all are
+                     returned if the fileset has fewer
+            workDir -- a string pointing to the working directory
+            seed -- an integer of the random seed
+        Returns:
+            variants -- a list of [chrom, variantID] lists, in fileset order
+        '''
+        thinPrefix = os.path.join(workDir, "thin")
+        self.run_plink(self.inputArgs + ["--thin-count", str(count), "--seed", str(seed), "--make-just-pvar"],
+                       thinPrefix)
+        variants = []
+        with open(thinPrefix + ".pvar", "r") as fileIn:
+            for line in fileIn:
+                if line.startswith("##"):
+                    continue
+                sl = line.rstrip("\r\n").split("\t")
+                if line.startswith("#"):
+                    chromIndex, idIndex = sl.index("#CHROM"), sl.index("ID")
+                    continue
+                variants.append([sl[chromIndex], sl[idIndex]])
+        return variants
+
+    def export_dosages(self, extractFile, workDir):
+        '''
+        Exports the allele dosages of variants for all samples (plink2 --export A).
+
+        Parameters:
+            extractFile -- a string pointing to a list of variant IDs (one per line)
+            workDir -- a string pointing to the working directory
+        Returns:
+            iids -- a list of IIDs, in row order
+            variantIDs -- a list of variant IDs, in column order
+            countedAlleles -- a list of the allele counted for each variant
+            dosages -- a numpy array (samples x variants) of counted allele
+                       dosages, with NaN where missing
+        '''
+        exportPrefix = os.path.join(workDir, "dosages")
+        self.run_plink(self.inputArgs + ["--extract", extractFile, "--export", "A"], exportPrefix)
+        with open(exportPrefix + ".raw", "r") as fileIn:
+            header = fileIn.readline().rstrip("\r\n").split("\t")
+            iids, rows = [], []
+            for line in fileIn:
+                sl = line.rstrip("\r\n").split("\t")
+                iids.append(sl[1])
+                rows.append([ np.nan if x == "NA" else float(x) for x in sl[6:] ])
+        variantIDs, countedAlleles = zip(*[ column.rsplit("_", 1) for column in header[6:] ]) \
+                                     if len(header) > 6 else ([], [])
+        return iids, list(variantIDs), list(countedAlleles), np.array(rows, dtype=float).reshape(len(iids), len(variantIDs))
+
     def clump(self, sumstatsFile, outputPrefix, workDir, idField="ID", pField="P",
               p1=1e-5, p2=0.01, r2=0.2, kb=2000, keepIIDs=None):
         '''
@@ -868,20 +946,8 @@ class PLINK(PLINKTool):
         clumpsFile = outputPrefix + ".clumps"
         self.check_outputs_absent([clumpsFile])
         args = self.inputArgs + ["--make-founders"]
-
-        # Write a --keep file, with FIDs where the fileset has them
         if keepIIDs is not None:
-            sampleOrder, sampleDict = parse_sample_info(self.write_psam(os.path.join(workDir, "samples")))
-            missing = [ iid for iid in keepIIDs if iid not in sampleDict ]
-            if missing != []:
-                raise ValueError(f"{len(missing)} sample(s) to keep are not in '{self.prefix}' (e.g., '{missing[0]}')")
-            keepFile = os.path.join(workDir, "keep.txt")
-            hasFID = "FID" in sampleDict[sampleOrder[0]]
-            with open(keepFile, "w") as fileOut:
-                fileOut.write("#FID\tIID\n" if hasFID else "#IID\n")
-                for iid in keepIIDs:
-                    fileOut.write((f"{sampleDict[iid]['FID']}\t" if hasFID else "") + iid + "\n")
-            args += ["--keep", keepFile]
+            args += ["--keep", self.keep_file(keepIIDs, workDir)]
 
         clumpPrefix = os.path.join(workDir, "clump")
         self.run_plink(args + ["--clump", sumstatsFile, "--clump-id-field", idField, "--clump-p-field", pField,

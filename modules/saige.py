@@ -15,6 +15,7 @@
 
 import os, re, sys, glob, json, shutil, statistics, subprocess
 from concurrent.futures import ThreadPoolExecutor
+import numpy as np
 from statistics import NormalDist
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -22,8 +23,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _version import __version__
 from plink import PLINK, PLINKTool, parse_sample_info
 from subprocess_runners import run_rscript
-from gwas_reporting import parse_lead_variants, LeadGeneReporter
+from gwas_reporting import parse_lead_variants, parse_saige_leads, inter_chromosomal_r2, LeadInspector, \
+    LeadGeneReporter
 from annotarium_importers import import_annotarium_gff3, import_annotarium_annotable
+from traits import BinaryTrait, get_trait
 
 SAIGE_SUBMODULE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "external", "SAIGE")
 GWAS_MANIFEST_SUFFIX = ".gwas.json"
@@ -35,21 +38,23 @@ class SAIGEPhenotype:
     optionally the ALT allele dosages of variants, as covariates.
 
     Samples are kept in sample information order, and are excluded if their
-    phenotype is missing or they are absent from the PCA. A binary phenotype
-    in PLINK coding (1 = control, 2 = case; 0 or -9 = missing) is recoded to 0/1.
+    phenotype is missing or they are absent from the PCA. Phenotypes are recoded
+    by a trait handler (see traits.py): a binary phenotype in PLINK coding
+    (1 = control, 2 = case; 0 or -9 = missing) is recoded to 0/1, while a
+    quantitative phenotype (-9 = missing) is kept as it is. The phenotype column
+    is named by the trait (e.g., 'y_binary').
 
     Example:
-        pheno = SAIGEPhenotype("prefix.psam", "prefix.pca.eigenvec")
+        pheno = SAIGEPhenotype("prefix.psam", "prefix.pca.eigenvec", BinaryTrait())
         covariates = pheno.write("prefix.pheno", [1, 2])
     '''
-    MISSING_VALUES = {"-9", "0", "NA", "na", "nan", "NaN", "."}
     ID_COLUMNS = {"FID", "IID", "SID", "PAT", "MAT", "SEX"}
 
-    def __init__(self, sampleFile, eigenvecFile):
+    def __init__(self, sampleFile, eigenvecFile, trait=None):
         self.sampleFile = sampleFile
         self.eigenvecFile = eigenvecFile
+        self.trait = trait if trait is not None else BinaryTrait()
         self.phenoColumn = None
-        self.phenoName = "y_binary"
         self.counts = {}
 
     @property
@@ -103,16 +108,10 @@ class SAIGEPhenotype:
 
     @property
     def phenoName(self):
-        return self._phenoName
-
-    @phenoName.setter
-    def phenoName(self, value):
         '''
         The phenotype's column name in the SAIGE phenotype file.
         '''
-        if not isinstance(value, str) or value == "":
-            raise ValueError("phenoName must be a non-empty string")
-        self._phenoName = value
+        return self.trait.PHENO_NAME
 
     @staticmethod
     def parse_eigenvec(eigenvecFile):
@@ -139,17 +138,6 @@ class SAIGEPhenotype:
                 sl = line.rstrip("\r\n").split("\t")
                 pcaDict[sl[iidIndex]] = [ sl[i] for i in pcIndices ]
         return pcaDict, len(pcIndices)
-
-    @staticmethod
-    def recode_binary(value):
-        '''
-        Recodes a PLINK binary phenotype (1/2) to 0/1, or None if missing.
-        '''
-        if value in SAIGEPhenotype.MISSING_VALUES:
-            return None
-        if value not in {"1", "2"}:
-            raise ValueError(f"Phenotype value '{value}' is not a binary PLINK phenotype (1 = control, 2 = case)")
-        return str(int(value) - 1)
 
     @staticmethod
     def parse_dosages(rawFile):
@@ -187,8 +175,9 @@ class SAIGEPhenotype:
 
     def write(self, outputFileName, pcList, rawFile=None):
         '''
-        Writes the SAIGE phenotype file. Sample counts are recorded in the counts
-        property.
+        Writes the SAIGE phenotype file. Sample counts, and a summary of the
+        phenotypes written (see the trait's summarise()), are recorded in the
+        counts property.
 
         Parameters:
             outputFileName -- a string of the location to write the file
@@ -203,11 +192,12 @@ class SAIGEPhenotype:
         pcNames = [ f"PC{i}" for i in pcList ]
         snpNames, dosageDict, means = SAIGEPhenotype.parse_dosages(rawFile) if rawFile is not None else ([], {}, [])
 
-        self.counts = { "written": 0, "cases": 0, "missingPheno": 0, "missingPCA": 0 }
+        self.counts = { "written": 0, "missingPheno": 0, "missingPCA": 0 }
+        phenotypes = []
         with open(outputFileName, "w") as fileOut:
             fileOut.write("\t".join([self.phenoName] + pcNames + ["IID"] + snpNames) + "\n")
             for iid in self.sampleOrder:
-                pheno = SAIGEPhenotype.recode_binary(self.sampleDict[iid][self.phenoColumn])
+                pheno = self.trait.recode(self.sampleDict[iid][self.phenoColumn])
                 if pheno is None:
                     self.counts["missingPheno"] += 1
                     continue
@@ -217,26 +207,32 @@ class SAIGEPhenotype:
                 row = [pheno] + [ self.pcaDict[iid][i-1] for i in pcList ] + [iid] + dosageDict.get(iid, means)
                 fileOut.write("\t".join(row) + "\n")
                 self.counts["written"] += 1
-                self.counts["cases"] += int(pheno)
+                phenotypes.append(pheno)
         if self.counts["written"] == 0:
             raise ValueError("No samples have both a phenotype and PCs; check that IIDs match")
+        self.counts["phenotype"] = self.trait.summarise(phenotypes)
         return pcNames + snpNames
 
 class SAIGE(PLINKTool):
     '''
-    Runs a SAIGE single-variant association test of a binary trait, using the
-    R scripts of a SAIGE source checkout (by default, variantopia's external/SAIGE
-    submodule) with an Rscript whose R library has the SAIGE package installed:
+    Runs a SAIGE single-variant association test of a binary or quantitative
+    trait, using the R scripts of a SAIGE source checkout (by default,
+    variantopia's external/SAIGE submodule) with an Rscript whose R library has
+    the SAIGE package installed:
         1. A sparse GRM from LD-pruned variants
-        2. The null logistic mixed model, fitted with the dense GRM of the pruned
-           variants, leaving one chromosome out (LOCO)
-        3. Per-chromosome tests (SPA, with Firth correction for P < 0.05), run in
-           parallel and merged
+        2. The null mixed model (logistic for a binary trait, linear for a
+           quantitative one), fitted with the dense GRM of the pruned variants,
+           leaving one chromosome out (LOCO)
+        3. Per-chromosome tests, run in parallel and merged; binary traits are
+           tested with SPA, with Firth correction for P < 0.05
+    The trait's SAIGE settings come from its trait handler (see traits.py).
 
     SAIGE reads its genotypes as a bed fileset, so pgen and bgen inputs are
     converted within a temporary working directory. plink2 settings are
-    inherited from PLINKTool. SAIGE fixes its random seed, so results are
-    reproducible.
+    inherited from PLINKTool. SAIGE fixes its random seed, but its null model
+    fit is not bit-for-bit reproducible (e.g., tau can differ in the 7th
+    significant figure between runs), so re-runs give equivalent rather than
+    identical results.
 
     Example:
         saige = SAIGE()
@@ -255,7 +251,7 @@ class SAIGE(PLINKTool):
         self.saigeDir = SAIGE_SUBMODULE_DIR
         self._rscriptExe = shutil.which("Rscript") # may be None; validated when SAIGE is first run
         self.jobs = 1
-        self.phenoName = "y_binary"
+        self.trait = BinaryTrait()
         self.relCutoff = 0.125
         self.grmMarkers = 20000
         self.minMAF = 0.01
@@ -486,7 +482,7 @@ class SAIGE(PLINKTool):
 
     def fit_null(self, grmBedPrefix, sparseGRM, phenoFile, covariates, outputPrefix):
         '''
-        Fits the null logistic mixed model with LOCO. A single variance ratio is
+        Fits the null mixed model with LOCO. A single variance ratio is
         estimated from pruned markers with MAC >= 20; categorical variance ratios
         would force LOCO off in SAIGE, and are intended for rare-variant tests.
 
@@ -502,8 +498,8 @@ class SAIGE(PLINKTool):
         '''
         args = [f"--plinkFile={grmBedPrefix}", f"--sparseGRMFile={sparseGRM}",
                 f"--sparseGRMSampleIDFile={sparseGRM}.sampleIDs.txt", f"--phenoFile={phenoFile}",
-                f"--phenoCol={self.phenoName}", "--sampleIDColinphenoFile=IID", "--traitType=binary",
-                "--isCateVarianceRatio=FALSE", "--useSparseGRMtoFitNULL=FALSE",
+                f"--phenoCol={self.trait.PHENO_NAME}", "--sampleIDColinphenoFile=IID"] + self.trait.null_args() + \
+               ["--isCateVarianceRatio=FALSE", "--useSparseGRMtoFitNULL=FALSE",
                 "--useSparseGRMforVarRatio=TRUE", "--LOCO=TRUE", f"--nThreads={self.threads}",
                 f"--outputPrefix={outputPrefix}.null", "--IsOverwriteVarianceRatioFile=TRUE"]
         if covariates != []:
@@ -515,16 +511,29 @@ class SAIGE(PLINKTool):
     def parse_tau(nullLog):
         '''
         Parses the final (converged) GRM variance component, tau, from a SAIGE
-        step 1 log; SAIGE logs it as 'Final <dispersion> <tau> :'.
+        step 1 log (see parse_variance_components()).
         '''
-        tau = None
+        return SAIGE.parse_variance_components(nullLog)[1]
+
+    @staticmethod
+    def parse_variance_components(nullLog):
+        '''
+        Parses the final (converged) variance components from a SAIGE step 1 log;
+        SAIGE logs them as 'Final <tau1> <tau2> :', where tau1 is the dispersion
+        (fixed at 1 for a binary trait) or the residual variance (for a
+        quantitative trait), and tau2 is the GRM variance component.
+
+        Returns:
+            tau1, tau2 -- floats of the variance components
+        '''
+        components = None
         with open(nullLog, "r") as fileIn:
             for line in fileIn:
                 if line.startswith("Final "):
-                    tau = float(line.split()[2])
-        if tau is None:
+                    components = [float(line.split()[1]), float(line.split()[2])]
+        if components is None:
             raise ValueError(f"No final tau estimate found in SAIGE null model log '{nullLog}'")
-        return tau
+        return components
 
     def test(self, testBedPrefix, sparseGRM, nullPrefix, outputFileName, workDir):
         '''
@@ -561,8 +570,8 @@ class SAIGE(PLINKTool):
                                         f"--sparseGRMFile={sparseGRM}",
                                         f"--sparseGRMSampleIDFile={sparseGRM}.sampleIDs.txt",
                                         f"--chrom={chrom}", "--LOCO=TRUE", f"--minMAF={self.minMAF}",
-                                        f"--minMAC={self.minMAC}", "--is_Firth_beta=TRUE",
-                                        "--pCutoffforFirth=0.05", "--is_output_moreDetails=TRUE"],
+                                        f"--minMAC={self.minMAC}"] + self.trait.test_args() +
+                                       ["--is_output_moreDetails=TRUE"],
                                chromPrefix + ".log")
             except Exception:
                 shutil.copy(chromPrefix + ".log", f"{os.path.splitext(outputFileName)[0]}.chr{chrom}.log")
@@ -679,6 +688,8 @@ def configure_saige(args):
     saige.grmMarkers = args.grmMarkers
     saige.minMAF = args.minMAF
     saige.minMAC = args.minMAC
+    saige.trait = get_trait(args.traitType, **({ "invNormalize": not args.noInvNormalize }
+                                               if args.traitType == "quantitative" else {}))
     return saige
 
 def saige_calibrate(args):
@@ -702,9 +713,10 @@ def saige_calibrate(args):
     with saige.work_dir(outputPrefix) as workDir:
         bedPrefix = saige.as_bed(plink, workDir)
         sparseGRM = saige.sparse_grm(bedPrefix, outputPrefix, workDir)
-        pheno = SAIGEPhenotype(plink.write_psam(os.path.join(workDir, "samples")), args.eigenvecFile)
+        pheno = SAIGEPhenotype(plink.write_psam(os.path.join(workDir, "samples")), args.eigenvecFile, saige.trait)
         pheno.phenoColumn = args.phenoColumn
 
+        print(f"# Trait type: {saige.trait.TYPE}")
         print("# " + "\t".join(header))
         for pcList, tag in pcSets:
             runPrefix = f"{outputPrefix}.{tag}"
@@ -758,12 +770,13 @@ def saige_gwas(args):
 
     with saige.work_dir(outputPrefix) as workDir:
         # Build the phenotype file, optionally with lead variant dosages as covariates
-        pheno = SAIGEPhenotype(plink.write_psam(os.path.join(workDir, "samples")), args.eigenvecFile)
+        pheno = SAIGEPhenotype(plink.write_psam(os.path.join(workDir, "samples")), args.eigenvecFile, saige.trait)
         pheno.phenoColumn = args.phenoColumn
         rawFile = saige.export_dosages(plink, args.covarSNPs, workDir) if args.covarSNPs is not None else None
         covariates = pheno.write(outputPrefix + ".pheno", pcList, rawFile)
         counts = pheno.counts
-        print(f"# Samples: {counts['written']} ({counts['cases']} cases, {counts['written'] - counts['cases']} controls)")
+        print(f"# Samples: {counts['written']} ({saige.trait.TYPE} trait; " +
+              f"{saige.trait.describe(counts['phenotype'])})")
         print(f"# Excluded {counts['missingPheno']} samples with a missing phenotype, and " +
               f"{counts['missingPCA']} phenotyped samples absent from the PCA")
         print(f"# Covariates: {','.join(covariates) or 'none'}")
@@ -773,7 +786,10 @@ def saige_gwas(args):
         grmVariants = PLINK.count_lines(grmBed + ".bim")
         sparseGRM = saige.sparse_grm(grmBed, outputPrefix, workDir)
         tau = saige.fit_null(grmBed, sparseGRM, outputPrefix + ".pheno", covariates, outputPrefix)
+        tauResidual = SAIGE.parse_variance_components(outputPrefix + ".null.log")[0]
         print(f"# Null model GRM variance (tau): {tau:.7g}")
+        if saige.trait.TYPE == "quantitative":
+            print(f"# Null model residual variance: {tauResidual:.7g}")
         testBed = saige.as_bed(plink, workDir)
         numTested = saige.test(testBed, sparseGRM, outputPrefix, resultFile, workDir)
     print(f"# Variants tested: {numTested}")
@@ -782,8 +798,8 @@ def saige_gwas(args):
     # Record the inputs and settings for 'saige summarise'
     manifestFile = write_gwas_manifest(outputPrefix, saige, plink, grmPlink, {
         "eigenvec": args.eigenvecFile, "phenoColumn": pheno.phenoColumn, "pcs": pcList, "pcTag": tag,
-        "covarSNPs": args.covarSNPs, "samples": counts["written"], "cases": counts["cases"],
-        "tau": tau, "variantsTested": numTested, "grmVariants": grmVariants })
+        "covarSNPs": args.covarSNPs, "samples": counts["written"], "phenotype": counts["phenotype"],
+        "tau": tau, "tauResidual": tauResidual, "variantsTested": numTested, "grmVariants": grmVariants })
     print(f"# Wrote {manifestFile}")
 
 def file_record(fileName, relativeTo):
@@ -810,7 +826,9 @@ def write_gwas_manifest(outputPrefix, saige, plink, grmPlink, analysis):
     '''
     Writes a record of a 'saige gwas' run's inputs and settings to
     '<outputPrefix>.gwas.json', for use by 'saige summarise'. Locations are
-    recorded relative to the output directory.
+    recorded relative to the output directory. The trait type and its settings
+    are taken from the SAIGE object; manifests without a trait type are of a
+    binary trait.
 
     Parameters:
         outputPrefix -- a string of the run's output prefix
@@ -824,8 +842,10 @@ def write_gwas_manifest(outputPrefix, saige, plink, grmPlink, analysis):
                         "pcs": [1, 2], # list of integers
                         "pcTag": tag, # string
                         "covarSNPs": [variantID, ...], # list of strings, or None
-                        "samples": int, "cases": int, # samples in the null model
-                        "tau": float, "variantsTested": int,
+                        "samples": int, # samples in the null model
+                        "phenotype": summary, # dictionary from the trait's summarise()
+                        "tau": float, "tauResidual": float, # variance components
+                        "variantsTested": int,
                         "grmVariants": int # variants in the GRM fileset
                     }
     Returns:
@@ -846,6 +866,8 @@ def write_gwas_manifest(outputPrefix, saige, plink, grmPlink, analysis):
                  "files": [ file_record(f, outputDir) for f in grmPlink.files ],
                  "variants": analysis["grmVariants"] },
         "eigenvec": file_record(analysis["eigenvec"], outputDir),
+        "traitType": saige.trait.TYPE,
+        "traitSettings": saige.trait.settings,
         "phenoColumn": analysis["phenoColumn"],
         "pcs": analysis["pcs"],
         "pcTag": analysis["pcTag"],
@@ -853,8 +875,9 @@ def write_gwas_manifest(outputPrefix, saige, plink, grmPlink, analysis):
         "settings": { "relCutoff": saige.relCutoff, "grmMarkers": saige.grmMarkers,
                       "minMAF": saige.minMAF, "minMAC": saige.minMAC },
         "samples": analysis["samples"],
-        "cases": analysis["cases"],
+        "phenotype": analysis["phenotype"],
         "tau": analysis["tau"],
+        "tauResidual": analysis["tauResidual"],
         "variantsTested": analysis["variantsTested"]
     }
     with open(manifestFile, "w") as fileOut:
@@ -880,19 +903,26 @@ class SAIGESummary:
                    is the number of GRM (LD-pruned) variants
         2. clump -- LD clumping of associated variants into independent loci
                     (plink2 --clump), with LD from the samples in the null model
-        3. annotate -- (OPTIONAL) genes near the lead variants of regions and clumps
+        3. inspect -- the direction of each lead variant's effect, the families its
+                      effect allele segregates in, its parental origin and
+                      Mendelian errors (where parents are genotyped), local support,
+                      and LD with stronger lead variants on other chromosomes,
+                      judged against the LD between unlinked (LD-pruned) variants
+                      on different chromosomes
+        4. annotate -- (OPTIONAL) genes near the lead variants of regions and clumps
 
     The tested fileset and samples are taken from the run's manifest. Each step's
-    settings are recorded in '<basename>.summary.json', so that a re-run skips
-    steps whose settings and outputs are unchanged, and re-uses recorded settings
-    that are not given again (e.g., to add an annotation to an earlier summary).
+    settings (and the variantopia version) are recorded in '<basename>.summary.json',
+    so that a re-run skips steps whose settings, version and outputs are unchanged,
+    and re-uses recorded settings that are not given again (e.g., to add an
+    annotation to an earlier summary). The trait type is taken from the manifest.
 
     Example:
         summary = SAIGESummary("output/saige/pc2")
         options = summary.resolve_options({ "suggestive": None, ... })
     '''
     DEFAULTS = { "title": None, "suggestive": 1e-5, "regionGap": 2000000, "topN": 50,
-                 "clumpP2": 0.01, "clumpR2": 0.2, "clumpKb": 2000,
+                 "clumpP2": 0.01, "clumpR2": 0.2, "clumpKb": 2000, "supportKb": 250, "linkR2": "auto",
                  "gff3File": None, "annotableFile": None, "chromMap": None,
                  "radius": 50000, "annotateP": None, "annotariumDir": None }
     ANNOTATION_FILES = ["gff3File", "annotableFile", "chromMap"]
@@ -900,14 +930,19 @@ class SAIGESummary:
     STEP_OPTIONS = {
         "plot": ["title", "suggestive", "regionGap", "topN"],
         "clump": ["suggestive", "clumpP2", "clumpR2", "clumpKb"],
+        "inspect": ["suggestive", "supportKb", "linkR2"],
         "annotate": ["radius", "annotateP"]
     }
+    NULL_VARIANTS = 2000 # LD-pruned variants sampled for the null r^2 distribution
+    LINK_ALPHA = 0.05 # adjusted empirical P below which leads are called linked, for --linkR2 auto
+    NULL_SEED = 1
 
     def __init__(self, gwasDir):
         self.gwasDir = os.path.abspath(gwasDir)
         self.manifestFile = find_gwas_manifest(self.gwasDir)
         with open(self.manifestFile, "r") as fileIn:
             self.manifest = json.load(fileIn)
+        self.trait = get_trait(self.manifest.get("traitType", "binary"), **self.manifest.get("traitSettings", {}))
         self.outputDir = os.path.join(self.gwasDir, "summarise")
         self.outputPrefix = os.path.join(self.outputDir, self.manifest["basename"])
         self.stateFile = self.outputPrefix + ".summary.json"
@@ -1010,9 +1045,80 @@ class SAIGESummary:
             if os.path.isfile(fileName):
                 os.remove(fileName)
 
-    def finish_step(self, step, params, outputs):
+    def finish_step(self, step, params, outputs, results=None):
         self.state["steps"][step] = { "params": params, "outputs": [ os.path.basename(f) for f in outputs ] }
+        if results is not None:
+            self.state["steps"][step]["results"] = results
         self.save_state()
+
+def configure_plink(plink, args):
+    '''
+    Applies the plink2 runtime arguments of 'saige summarise' to a PLINK object.
+    '''
+    plink.threads, plink.memory, plink.tmpDir, plink.keepTmp = args.threads, args.memory, args.tmpDir, args.keepTmp
+    if args.plink2 is not None:
+        plink.plinkExe = args.plink2
+    return plink
+
+def inspect_leads(summary, inputs, leads, options, args, leadsFile, familiesFile):
+    '''
+    Writes the lead variant inspections of 'saige summarise' (see LeadInspector).
+
+    Returns:
+        results -- a dictionary of the linkage threshold and counts, to record
+    '''
+    trait = summary.trait
+    leadStats = parse_saige_leads(inputs["results"], leads, options["supportKb"], options["suggestive"],
+                                  trait.SAIGE_RESULT_COLUMNS)
+    with open(inputs["pheno"], "r") as fileIn:
+        header = fileIn.readline().rstrip("\r\n").split("\t")
+        phenoIndex, iidIndex = header.index(trait.PHENO_NAME), header.index("IID")
+        phenos = { sl[iidIndex]: float(sl[phenoIndex]) for sl in ( line.rstrip("\r\n").split("\t") for line in fileIn ) }
+
+    plink = configure_plink(PLINK(*inputs["test"]), args)
+    grmPlink = configure_plink(PLINK(os.path.normpath(os.path.join(summary.gwasDir, summary.manifest["grm"]["prefix"])),
+                                     summary.manifest["grm"]["format"]), args)
+    with plink.work_dir(summary.outputPrefix) as workDir:
+        leadIDs = { lead["id"] for lead in leads }
+        nullVariants = [ v for v in grmPlink.thin_variants(min(SAIGESummary.NULL_VARIANTS, summary.manifest["grm"]["variants"]),
+                                                           workDir, seed=SAIGESummary.NULL_SEED)
+                         if v[1] not in leadIDs ]
+        extractFile = os.path.join(workDir, "inspect.txt")
+        with open(extractFile, "w") as fileOut:
+            fileOut.write("\n".join([ lead["id"] for lead in leads ] + [ v[1] for v in nullVariants ]) + "\n")
+        iids, variantIDs, countedAlleles, dosages = plink.export_dosages(extractFile, workDir)
+        sampleOrder, sampleDict = parse_sample_info(plink.write_psam(os.path.join(workDir, "samples")))
+
+    # Orient lead dosages to SAIGE's effect allele (Allele2)
+    columnIndex = { variantID: i for i, variantID in enumerate(variantIDs) }
+    missing = [ lead["id"] for lead in leads if lead["id"] not in columnIndex ]
+    if missing != []:
+        raise ValueError(f"{len(missing)} lead variant(s) are not in '{plink.prefix}' (e.g., '{missing[0]}')")
+    leadDosages = np.empty((len(iids), len(leads)))
+    for i, lead in enumerate(leads):
+        stats, counted = leadStats[lead["id"]], countedAlleles[columnIndex[lead["id"]]]
+        column = dosages[:, columnIndex[lead["id"]]]
+        if counted.upper() == stats["Allele2"].upper(): # SAIGE upper-cases soft-masked alleles
+            leadDosages[:, i] = column
+        elif counted.upper() == stats["Allele1"].upper():
+            leadDosages[:, i] = 2 - column
+        else:
+            raise ValueError(f"plink2 counted allele '{counted}' of '{lead['id']}' is neither SAIGE allele " +
+                             f"('{stats['Allele1']}', '{stats['Allele2']}')")
+
+    # Null distribution of r^2 between unlinked variants, among the tested samples
+    testedRows = [ i for i, iid in enumerate(iids) if iid in phenos ]
+    nullColumns = [ columnIndex[v[1]] for v in nullVariants if v[1] in columnIndex ]
+    nullChroms = [ v[0] for v in nullVariants if v[1] in columnIndex ]
+    nullR2 = inter_chromosomal_r2(dosages[np.ix_(testedRows, nullColumns)], nullChroms)
+
+    inspector = LeadInspector(leads, leadStats, iids, leadDosages, sampleDict, phenos, trait)
+    inspector.set_null(nullR2, alpha=SAIGESummary.LINK_ALPHA,
+                       linkR2=None if options["linkR2"] == "auto" else options["linkR2"])
+    counts = inspector.write(leadsFile, familiesFile)
+    return { "nullVariants": len(nullColumns), "nullPairs": len(nullR2),
+             "nullR2Quantiles": { str(q): round(float(np.quantile(nullR2, q)), 4) for q in [0.5, 0.99, 0.9999] },
+             "hasParents": inspector.hasParents, **counts }
 
 def saige_summarise(args):
     '''
@@ -1025,12 +1131,12 @@ def saige_summarise(args):
     summary.record_options(options)
     outputPrefix = summary.outputPrefix
     resultsRecord = summary.manifest["results"]
-    print(f"# Summarising '{inputs['results']}' ({summary.manifest['pcTag']}; " +
+    print(f"# Summarising '{inputs['results']}' ({summary.trait.TYPE} trait; {summary.manifest['pcTag']}; " +
           f"{summary.manifest['samples']} samples) into '{summary.outputDir}'")
 
     # Step 1: Manhattan and QQ plots, top hits and associated regions
     meff = summary.manifest["grm"]["variants"]
-    plotParams = { "results": resultsRecord, "meff": meff,
+    plotParams = { "version": __version__, "results": resultsRecord, "meff": meff,
                    **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["plot"] } }
     plotOutputs = [ outputPrefix + suffix for suffix in [".manhattan.png", ".qq.png", ".top_hits.tsv", ".plot.log"] ]
     regionsFile = outputPrefix + ".regions.tsv"
@@ -1058,16 +1164,13 @@ def saige_summarise(args):
     with open(inputs["pheno"], "r") as fileIn:
         iidIndex = fileIn.readline().rstrip("\r\n").split("\t").index("IID")
         keepIIDs = [ line.rstrip("\r\n").split("\t")[iidIndex] for line in fileIn ]
-    clumpParams = { "results": resultsRecord, "samples": len(keepIIDs),
+    clumpParams = { "version": __version__, "results": resultsRecord, "samples": len(keepIIDs),
                     **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["clump"] } }
     clumpsFile = outputPrefix + ".clumps"
     clumpRan = not summary.is_current("clump", clumpParams)
     if clumpRan:
         summary.start_step("clump", [clumpsFile, clumpsFile + ".log"])
-        plink = PLINK(*inputs["test"])
-        plink.threads, plink.memory, plink.tmpDir, plink.keepTmp = args.threads, args.memory, args.tmpDir, args.keepTmp
-        if args.plink2 is not None:
-            plink.plinkExe = args.plink2
+        plink = configure_plink(PLINK(*inputs["test"]), args)
         with plink.work_dir(outputPrefix) as workDir:
             clumped = plink.clump(inputs["results"], outputPrefix, workDir, idField="MarkerID", pField="p.value",
                                   p1=options["suggestive"], p2=options["clumpP2"], r2=options["clumpR2"],
@@ -1080,14 +1183,46 @@ def saige_summarise(args):
     else:
         print("# Clumps are up to date; skipping")
 
-    # Step 3: Optionally, relate lead variants of regions and clumps to nearby genes
+    # Step 3: Inspect lead variants of regions and clumps
+    leads = parse_lead_variants(regionsFile if os.path.isfile(regionsFile) else None,
+                                clumpsFile if os.path.isfile(clumpsFile) else None)
+    inspectParams = { "version": __version__, "plot": plotParams, "clump": clumpParams, "grm": summary.manifest["grm"]["files"],
+                      "nullVariants": SAIGESummary.NULL_VARIANTS, "linkAlpha": SAIGESummary.LINK_ALPHA,
+                      "nullSeed": SAIGESummary.NULL_SEED,
+                      **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["inspect"] } }
+    leadsFile, familiesFile = outputPrefix + ".leads.tsv", outputPrefix + ".lead_families.tsv"
+    if not (plotRan or clumpRan) and summary.is_current("inspect", inspectParams):
+        print("# Lead variant inspection is up to date; skipping")
+    else:
+        summary.start_step("inspect", [leadsFile, familiesFile])
+        if leads == []:
+            print("# No lead variants to inspect")
+            summary.finish_step("inspect", inspectParams, [])
+        else:
+            results = inspect_leads(summary, inputs, leads, options, args, leadsFile, familiesFile)
+            quantiles = results["nullR2Quantiles"]
+            print(f"# Null r^2 between {results['nullVariants']} LD-pruned variants on different chromosomes: " +
+                  f"median {quantiles['0.5']}, 99% {quantiles['0.99']}, 99.99% {quantiles['0.9999']}")
+            threshold = f"r^2 >= {options['linkR2']:g}" if options["linkR2"] != "auto" else \
+                        f"adjusted empirical P < {SAIGESummary.LINK_ALPHA:g}"
+            print(f"# Lead variants inspected: {results['leads']}; {results['linked']} are linked to a stronger " +
+                  f"lead on another chromosome ({threshold})")
+            if results["hasParents"]:
+                print(f"# Lead variants with Mendelian errors in >= {LeadInspector.MENDEL_RATE_FLAG:.0%} of offspring " +
+                      f"with a genotyped parent: {results['withMendelErrors']}")
+            else:
+                print("# No family has a genotyped parent; parental origin and Mendelian errors are not assessed")
+            summary.finish_step("inspect", inspectParams, [leadsFile, familiesFile], results)
+            print(f"# Wrote {leadsFile} and {familiesFile}")
+
+    # Step 4: Optionally, relate lead variants of regions and clumps to nearby genes
     if options["gff3File"] is None:
         print("# No GFF3 given; skipping gene annotation")
         return
     annotateParams = { key: (file_record(options[key], summary.outputDir) if options[key] is not None else None)
                        for key in SAIGESummary.ANNOTATION_FILES }
     annotateParams.update({ key: options[key] for key in SAIGESummary.STEP_OPTIONS["annotate"] })
-    annotateParams.update({ "plot": plotParams, "clump": clumpParams })
+    annotateParams.update({ "version": __version__, "plot": plotParams, "clump": clumpParams })
     leadGenesFile = outputPrefix + ".lead_genes.tsv"
     if not (plotRan or clumpRan) and summary.is_current("annotate", annotateParams):
         print("# Gene annotation is up to date; skipping")
@@ -1099,8 +1234,6 @@ def saige_summarise(args):
                                 if options["annotableFile"] is not None else None)
     reporter.chromMap = options["chromMap"]
     reporter.radius = options["radius"]
-    leads = parse_lead_variants(regionsFile if os.path.isfile(regionsFile) else None,
-                                clumpsFile if os.path.isfile(clumpsFile) else None)
     if options["annotateP"] is not None:
         leads = [ lead for lead in leads if float(lead["p"]) < options["annotateP"] ]
     counts = reporter.write(leads, leadGenesFile)

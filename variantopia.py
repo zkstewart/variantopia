@@ -812,9 +812,23 @@ def main():
     saShared.add_argument("--phenoColumn", dest="phenoColumn",
                           required=False,
                           help="""Optionally, specify the sample information column holding the
-                          binary phenotype (1 = control, 2 = case); default is the first
-                          phenotype column (e.g., PHENO1)""",
+                          phenotype; default is the first phenotype column (e.g., PHENO1)""",
                           default=None)
+    saShared.add_argument("--traitType", dest="traitType",
+                          required=False,
+                          choices=["binary", "quantitative"],
+                          help="""Optionally, specify the type of the phenotype: 'binary' (PLINK
+                          coding of 1 = control, 2 = case, with 0 or -9 as missing), tested with
+                          a logistic mixed model, or 'quantitative' (numbers, with -9 as
+                          missing), tested with a linear mixed model; default == 'binary'""",
+                          default="binary")
+    saShared.add_argument("--noInvNormalize", dest="noInvNormalize",
+                          required=False,
+                          action="store_true",
+                          help="""Optionally, provide this flag to fit a quantitative trait as it
+                          is, rather than after an inverse normal transformation (the default
+                          for --traitType quantitative)""",
+                          default=False)
     saShared.add_argument("--relCutoff", dest="relCutoff",
                           required=False,
                           type=float,
@@ -930,7 +944,7 @@ def main():
     sagwasparser = subSaigeParsers.add_parser("gwas",
                                               parents=[p, saShared],
                                               add_help=False,
-                                              help="Single-variant GWAS of a binary trait")
+                                              help="Single-variant GWAS of a binary or quantitative trait")
     sagwasparser.set_defaults(func=samain)
 
     sagwasparser.add_argument("-i", dest="plinkPrefix",
@@ -977,15 +991,16 @@ def main():
     sasumparser = subSaigeParsers.add_parser("summarise",
                                              parents=[p],
                                              add_help=False,
-                                             help="Plot, clump and annotate the results of 'saige gwas'")
+                                             help="Plot, clump, inspect and annotate the results of 'saige gwas'")
     sasumparser.set_defaults(func=samain)
 
     sasumparser.add_argument("-i", dest="gwasDir",
                              required=True,
                              help="""Output directory of a 'saige gwas' run; its recorded inputs are
                              re-used, and results are written to its 'summarise' subdirectory.
-                             Re-running skips steps whose settings are unchanged, and re-uses
-                             settings from the earlier summary that are not given again""")
+                             Re-running skips steps whose settings and variantopia version are
+                             unchanged, and re-uses settings from the earlier summary that are
+                             not given again""")
     sasumparser.add_argument("--title", dest="title",
                              required=False,
                              help="""Optionally, specify a title for the plots; default is the
@@ -1027,6 +1042,21 @@ def main():
                              help="""Optionally, specify the distance (kb) from an index variant
                              within which variants can join its clump; default == 2000""",
                              default=None)
+    sasumparser.add_argument("--supportKb", dest="supportKb",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the distance (kb) either side of a lead
+                             variant within which tested and suggestive variants are counted as
+                             its local support; default == 250""",
+                             default=None)
+    sasumparser.add_argument("--linkR2", dest="linkR2",
+                             required=False,
+                             help="""Optionally, specify the r^2 with a stronger lead variant on another
+                             chromosome at which a lead variant is flagged as linked to it; 'auto' instead flags a
+                             lead whose strongest r^2 has an empirical P < 0.05
+                             (Bonferroni-adjusted for the leads compared) against the r^2 between LD-pruned
+                             variants on different chromosomes; default == 'auto'""",
+                             default=None)
     sasumparser.add_argument("--gff3", dest="gff3File",
                              required=False,
                              help="""Optionally, specify a GFF3 of gene models to list the genes near
@@ -1064,12 +1094,13 @@ def main():
                              required=False,
                              type=int,
                              help="""Optionally, specify the number of threads to use with
-                             PLINK2 clumping; default == 1""",
+                             PLINK2 clumping and lead variant inspection; default == 1""",
                              default=1)
     sasumparser.add_argument("--mem", dest="memory",
                              required=False,
                              help="""Optionally, specify the amount of memory to use with
-                             PLINK2 clumping; default == '16Gb' (equivalent to '16000Mb' or
+                             PLINK2 clumping and lead variant inspection; default == '16Gb'
+                             (equivalent to '16000Mb' or
                              '16000000Kb')""",
                              default="16Gb")
     sasumparser.add_argument("--tmpDir", dest="tmpDir",
@@ -1426,10 +1457,11 @@ def main():
                              help="Location of VCF file to reformat")
     vtoplparser.add_argument("-f", dest="famFile",
                              required=True,
-                             help="Location of .fam file describing ")
+                             help="""Location of .fam file describing each sample's family, parents,
+                             sex and phenotype, matched to VCF samples by IID""")
     vtoplparser.add_argument("-o", dest="outputPrefix",
                              required=True,
-                             help="Location to write reformatted file")
+                             help="Prefix to write the PLINK fileset to")
     vtoplparser.add_argument("-of", dest="outputFormat",
                              required=True,
                              choices=["pgen", "bgen", "bed"],
@@ -1444,7 +1476,7 @@ def main():
                              required=False,
                              help="""Optionally, provide a two-column TSV file relating
                              VCF samples (left) to their sample IID listed in the .fam file
-                             (right). Unlisted contigs are removed from the resulting outputs""",
+                             (right). Unlisted samples are removed from the resulting outputs""",
                              default=None)
     vtoplparser.add_argument("--threads", dest="threads",
                              required=False,
