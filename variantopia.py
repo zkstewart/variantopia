@@ -26,7 +26,7 @@ from modules.validation import validate_m, \
     validate_pan, validate_pan_paint, validate_pan_plot, validate_pan_plot_inherit, validate_pan_plot_het, \
     validate_pan_plot_paint, \
     validate_pl, validate_pl_filter, validate_pl_king, validate_pl_pca, validate_pl_prune, validate_pl_qc, \
-    validate_sa, validate_sa_calibrate, validate_sa_gwas, \
+    validate_sa, validate_sa_calibrate, validate_sa_gwas, validate_sa_summarise, \
     validate_v, validate_v_panel, validate_v_plot, validate_v_relabel, validate_v_stats, validate_v_filter, \
     validate_v_to, validate_v_to_cf, validate_v_to_geno, validate_v_to_msa, validate_v_to_plink, validate_v_to_pos, validate_v_to_table, \
     validate_v_cn, validate_v_cn_plot
@@ -35,7 +35,7 @@ from modules.msaplot import msa_plot_stats, msa_plot_alignment
 from modules.pangenome import pan_paint, pan_plot_inherit, pan_plot_het
 from modules.pangenomeplot import pan_plot_paint
 from modules.plink import plink_filter, plink_king, plink_pca, plink_prune, plink_qc
-from modules.saige import saige_calibrate, saige_gwas
+from modules.saige import saige_calibrate, saige_gwas, saige_summarise
 from modules.vcf import vcf_stats, vcf_relabel, vcf_filter
 from modules.panel import vcf_panel
 from modules.vcfcopynum import copynum_plot
@@ -971,6 +971,130 @@ def main():
                               condition on lead variants); missing dosages are mean-imputed""",
                               default=None)
 
+    # SAIGE > summarise mode
+    ## Options default to None so that values recorded by an earlier summary of
+    ## the same run can be re-used; the effective defaults are noted in the help
+    sasumparser = subSaigeParsers.add_parser("summarise",
+                                             parents=[p],
+                                             add_help=False,
+                                             help="Plot, clump and annotate the results of 'saige gwas'")
+    sasumparser.set_defaults(func=samain)
+
+    sasumparser.add_argument("-i", dest="gwasDir",
+                             required=True,
+                             help="""Output directory of a 'saige gwas' run; its recorded inputs are
+                             re-used, and results are written to its 'summarise' subdirectory.
+                             Re-running skips steps whose settings are unchanged, and re-uses
+                             settings from the earlier summary that are not given again""")
+    sasumparser.add_argument("--title", dest="title",
+                             required=False,
+                             help="""Optionally, specify a title for the plots; default is the
+                             base name of the results and their covariates""",
+                             default=None)
+    sasumparser.add_argument("--suggestive", dest="suggestive",
+                             required=False,
+                             type=float,
+                             help="""Optionally, specify the suggestive P threshold used for plots,
+                             associated regions and clump index variants; default == 1e-5""",
+                             default=None)
+    sasumparser.add_argument("--regionGap", dest="regionGap",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the maximum gap (bp) between suggestive
+                             variants merged into one associated region; default == 2000000""",
+                             default=None)
+    sasumparser.add_argument("--topN", dest="topN",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of top variants to list;
+                             default == 50""",
+                             default=None)
+    sasumparser.add_argument("--clumpP2", dest="clumpP2",
+                             required=False,
+                             type=float,
+                             help="""Optionally, specify the P threshold for variants to join a
+                             clump; default == 0.01""",
+                             default=None)
+    sasumparser.add_argument("--clumpR2", dest="clumpR2",
+                             required=False,
+                             type=float,
+                             help="""Optionally, specify the r^2 with an index variant needed to
+                             join its clump; default == 0.2""",
+                             default=None)
+    sasumparser.add_argument("--clumpKb", dest="clumpKb",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the distance (kb) from an index variant
+                             within which variants can join its clump; default == 2000""",
+                             default=None)
+    sasumparser.add_argument("--gff3", dest="gff3File",
+                             required=False,
+                             help="""Optionally, specify a GFF3 of gene models to list the genes near
+                             the lead variants of regions and clumps""",
+                             default=None)
+    sasumparser.add_argument("--annotable", dest="annotableFile",
+                             required=False,
+                             help="""Optionally, specify an annotable (format defined by annotarium) of
+                             best BLAST hits per transcript to name the genes listed with --gff3""",
+                             default=None)
+    sasumparser.add_argument("--chromMap", dest="chromMap",
+                             required=False,
+                             help="""Optionally, provide a two-column TSV file relating --gff3 seqids
+                             (left) to the GWAS chromosomes (right), as for 'vcf to plink
+                             --chromMap'; default is that they are the same""",
+                             default=None)
+    sasumparser.add_argument("--radius", dest="radius",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the distance (bp) either side of a lead
+                             variant within which genes are listed; default == 50000""",
+                             default=None)
+    sasumparser.add_argument("--annotateP", dest="annotateP",
+                             required=False,
+                             type=float,
+                             help="""Optionally, only list genes near lead variants with P below
+                             this; default is all lead variants""",
+                             default=None)
+    sasumparser.add_argument("--annotarium", dest="annotariumDir",
+                             required=False,
+                             help="""If you specify --gff3, you MUST indicate the location of the
+                             annotarium repository so variantopia can import necessary code""",
+                             default=None)
+    sasumparser.add_argument("--threads", dest="threads",
+                             required=False,
+                             type=int,
+                             help="""Optionally, specify the number of threads to use with
+                             PLINK2 clumping; default == 1""",
+                             default=1)
+    sasumparser.add_argument("--mem", dest="memory",
+                             required=False,
+                             help="""Optionally, specify the amount of memory to use with
+                             PLINK2 clumping; default == '16Gb' (equivalent to '16000Mb' or
+                             '16000000Kb')""",
+                             default="16Gb")
+    sasumparser.add_argument("--tmpDir", dest="tmpDir",
+                             required=False,
+                             help="""Optionally, specify the directory in which to create the
+                             temporary working directory; default is the output directory""",
+                             default=None)
+    sasumparser.add_argument("--keepTmp", dest="keepTmp",
+                             required=False,
+                             action="store_true",
+                             help="""Optionally, keep the temporary working directory and its
+                             intermediate files rather than deleting them""",
+                             default=False)
+    sasumparser.add_argument("--plink2", dest="plink2",
+                             required=False,
+                             help="""Optionally, specify the location of the plink2 executable
+                             if it is not discoverable in your system PATH""",
+                             default=None)
+    sasumparser.add_argument("--rscript", dest="rscript",
+                             required=False,
+                             help="""Optionally, specify the location of the Rscript executable
+                             used for plotting if it is not discoverable in your system PATH;
+                             R packages optparse, data.table and ggplot2 are required""",
+                             default=None)
+
     # VCF subparser
     vparser = subparsers.add_parser("vcf",
                                     parents=[p],
@@ -1140,26 +1264,26 @@ def main():
     vrelabelparser.add_argument("-o", dest="outputFileName",
                                 required=True,
                                 help="Location to write relabel VCF output")
-    vrelabelparser.add_argument("--samples", dest="samplesMetadataTsv",
+    vrelabelparser.add_argument("--sampleMap", dest="sampleMap",
                                 required=False,
-                                help="Location of metadata file with old:new identifier pairs for SAMPLES",
+                                help="Location of ID mapping file with old:new identifier pairs for SAMPLES",
                                 default=None)
-    vrelabelparser.add_argument("--chromosomes", dest="chromosomesMetadataTsv",
+    vrelabelparser.add_argument("--chromMap", dest="chromMap",
                                 required=False,
-                                help="Location of metadata file with old:new identifier pairs for CHROMOSOMES",
+                                help="Location of ID mapping file with old:new identifier pairs for CHROMOSOMES",
                                 default=None)
     vrelabelparser.add_argument("--relaxSamples", dest="allowNoSampleMatch",
                                 required=False,
                                 action="store_true",
                                 help="""Optionally provide this flag if you want to allow samples in the VCF
-                                header to have no match in the metadata TSV; in practice this lets you rename
+                                header to have no match in the ID mapping file; in practice this lets you rename
                                 just a subset of samples rather than enforcing complete replacement""",
                                 default=False)
     vrelabelparser.add_argument("--relaxChromosomes", dest="allowNoChromosomeMatch",
                                 required=False,
                                 action="store_true",
                                 help="""Optionally provide this flag if you want to allow chromosomes in the VCF
-                                to have no match in the metadata TSV; in practice this lets you rename
+                                to have no match in the ID mapping file; in practice this lets you rename
                                 just a subset of chromosomes rather than enforcing complete replacement""",
                                 default=False)
     
@@ -1310,13 +1434,13 @@ def main():
                              required=True,
                              choices=["pgen", "bgen", "bed"],
                              help="Specify the output PLINK file type")
-    vtoplparser.add_argument("--chrom", dest="chromMap",
+    vtoplparser.add_argument("--chromMap", dest="chromMap",
                              required=False,
                              help="""Optionally, provide a two-column TSV file relating
                              VCF contigs (left) to simple PLINK-compliant chromosome numbers
                              (right). Unlisted contigs are removed from the resulting outputs""",
                              default=None)
-    vtoplparser.add_argument("--sample", dest="sampleMap",
+    vtoplparser.add_argument("--sampleMap", dest="sampleMap",
                              required=False,
                              help="""Optionally, provide a two-column TSV file relating
                              VCF samples (left) to their sample IID listed in the .fam file
@@ -1433,7 +1557,8 @@ def main():
         plmain(args)
     elif args.mode == "saige":
         print("## variantopia.py - SAIGE association testing ##")
-        validate_sa(args)
+        if args.saigeMode != "summarise": # summarise does not run SAIGE, and shares none of its arguments
+            validate_sa(args)
         samain(args)
     
     # Print completion flag if we reach this point
@@ -1524,6 +1649,10 @@ def samain(args):
         print("## SAIGE GWAS ##")
         validate_sa_gwas(args)
         saige_gwas(args)
+    elif args.saigeMode == "summarise":
+        print("## Summarise SAIGE GWAS results ##")
+        validate_sa_summarise(args)
+        saige_summarise(args)
     
     print("SAIGE handling complete!")
 
@@ -1544,7 +1673,7 @@ def vmain(args):
         validate_v_plot(args)
         vcf_plot(args)
     if args.vcfMode == "relabel":
-        print("## Update VCF chromosome labels ##")
+        print("## Update VCF sample and/or chromosome labels ##")
         validate_v_relabel(args)
         vcf_relabel(args)
     if args.vcfMode == "stats":

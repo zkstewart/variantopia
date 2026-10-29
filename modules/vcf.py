@@ -24,48 +24,48 @@ def vcf_relabel(args):
     '''
     Handles "vcf relabel" mode of variantopia.
     '''
-    if args.samplesMetadataTsv != None:
-        sampleDict = parse_2col_tsv_as_dict(args.samplesMetadataTsv)
-    if args.chromosomesMetadataTsv != None:
-        chromosomesDict = parse_2col_tsv_as_dict(args.chromosomesMetadataTsv)
+    if args.sampleMap != None:
+        sampleDict = parse_2col_tsv_as_dict(args.sampleMap)
+    if args.chromMap != None:
+        chromosomesDict = parse_2col_tsv_as_dict(args.chromMap)
     
     warnedChromosomes = set()
     with read_gz_file(args.vcfFile) as fileIn, BgzCapableWriter(args.outputFileName) as fileOut:
         for line in fileIn:
-            # Header handling contingent on --samples
+            # Header handling contingent on --sampleMap
             if line.startswith("#CHROM"):
                 sl = line.rstrip().split("\t")
                 samples = sl[9:]
                 
-                # Run conversion of oldid to newid based on metadata file
+                # Run conversion of oldid to newid based on mapping file
                 newSamples = []
                 for oldid in samples:
-                    if args.samplesMetadataTsv != None:
+                    if args.sampleMap != None:
                         if oldid in sampleDict: # replacement is specified
                             newid = sampleDict[oldid]
                         elif not args.allowNoSampleMatch: # replacement NOT specified, and not allowed
-                            raise ValueError(f"VCF sample '{oldid}' has no match in your metadata file '{args.samplesMetadataTsv}'")
+                            raise ValueError(f"VCF sample '{oldid}' has no match in your ID mapping file '{args.sampleMap}'")
                         else: # replacement NOT specified, but is allowed
                             print(f"# --relaxSamples is allowing '{oldid}' to be unchanged in the resulting VCF header")
                             newid = oldid
                         
                         newSamples.append(newid)
-                    else: # --samples unspecified
+                    else: # --sampleMap unspecified
                         newSamples.append(oldid)
                 
                 # Format and write updated line
                 newsl = sl[0:9] + newSamples
                 fileOut.write("\t".join(newsl) + ("\r\n" if line.endswith("\r\n") else "\n"))
-            # Header handling contingent on --chromosomes
+            # Header handling contingent on --chromMap
             elif line.startswith("##contig=<ID="):
                 commentDict = VCFTopia.comment_as_dict(line)
                 oldid = commentDict["ID"]
                 
-                if args.chromosomesMetadataTsv != None:
+                if args.chromMap != None:
                     if oldid in chromosomesDict: # replacement is specified
                         newid = chromosomesDict[oldid]
                     elif not args.allowNoChromosomeMatch: # replacement NOT specified, and not allowed
-                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your metadata file '{args.chromosomesMetadataTsv}'")
+                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your ID mapping file '{args.chromMap}'")
                     else: # replacement NOT specified, but is allowed
                         if not oldid in warnedChromosomes:
                             print(f"# --relaxChromosomes is allowing '{oldid}' to be unchanged in the resulting VCF body")
@@ -73,21 +73,21 @@ def vcf_relabel(args):
                         newid = oldid
                     
                     fileOut.write(line.replace(f"ID={oldid}", f"ID={newid}"))
-                else: # --chromosomes unspecified
+                else: # --chromMap unspecified
                     fileOut.write(line)
             # Header lines with no specific handling
             elif line.startswith("#"):
                 fileOut.write(line)
-            # Body handling contigent on --chromosomes
+            # Body handling contingent on --chromMap
             else:
                 sl = line.rstrip().split("\t")
                 oldid = sl[0]
                 
-                if args.chromosomesMetadataTsv != None:
+                if args.chromMap != None:
                     if oldid in chromosomesDict: # replacement is specified
                         sl[0] = chromosomesDict[oldid]
                     elif not args.allowNoChromosomeMatch: # replacement NOT specified, and not allowed
-                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your metadata file '{args.chromosomesMetadataTsv}'")
+                        raise ValueError(f"VCF chromosome '{oldid}' has no match in your ID mapping file '{args.chromMap}'")
                     else: # replacement NOT specified, but is allowed
                         if not oldid in warnedChromosomes:
                             print(f"# --relaxChromosomes is allowing '{oldid}' to be unchanged in the resulting VCF body")
@@ -95,7 +95,7 @@ def vcf_relabel(args):
                         pass
                     
                     line = "\t".join(sl) + ("\r\n" if line.endswith("\r\n") else "\n")
-                else: # --chromosomes unspecified
+                else: # --chromMap unspecified
                     pass
                 
                 fileOut.write(line)

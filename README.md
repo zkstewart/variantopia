@@ -67,6 +67,8 @@ git submodule update --init external/SAIGE
 
 The SAIGE R package must also be installed, at the same version as the submodule. SAIGE provides a pixi environment for this (see its `pixi.toml` and `docker/Dockerfile`); if that environment is built within `external/SAIGE`, variantopia finds its Rscript automatically. Otherwise, specify an Rscript with SAIGE installed using `--saigeRscript`, or another SAIGE checkout using `--saigeDir`. variantopia checks that the installed SAIGE package version matches the SAIGE scripts it runs.
 
+`saige gwas` records its inputs and settings in a `<prefix>.gwas.json` file within its output directory, so that `saige summarise` needs only that directory. Summaries are written to its `summarise` subdirectory; re-running `saige summarise` skips steps whose settings are unchanged, so an annotation (`--gff3`, and optionally `--annotable`) can be added to an earlier summary. Gene annotation requires the annotarium repository (https://github.com/zkstewart/annotarium), given with `--annotarium`.
+
 variantopia has been developed on Linux and within Windows Subsystem for Linux (WSL); it is not currently compatible with plain Windows.
 
 ## Installation suggestions

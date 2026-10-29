@@ -385,6 +385,7 @@ class PLINK(PLINKTool):
         self._prefix = prefix
         self._fileFormat = fileFormat
         self._inputCompression = inputCompression
+        self._files = [ prefix + s for s in suffixes ]
 
     @property
     def prefix(self):
@@ -393,6 +394,13 @@ class PLINK(PLINKTool):
     @property
     def fileFormat(self):
         return self._fileFormat
+
+    @property
+    def files(self):
+        '''
+        The files of this fileset.
+        '''
+        return self._files
 
     @property
     def inputArgs(self):
@@ -832,6 +840,66 @@ class PLINK(PLINKTool):
                     continue
                 fileOut.write(line.split()[idIndex] + "\n")
         return idFile
+
+    def clump(self, sumstatsFile, outputPrefix, workDir, idField="ID", pField="P",
+              p1=1e-5, p2=0.01, r2=0.2, kb=2000, keepIIDs=None):
+        '''
+        Clumps associated variants into LD-independent loci with plink2 --clump.
+        Index variants have P < p1; variants with P < p2 within kb of an index
+        variant and in LD (r^2 >= r2) with it join its clump. LD is computed from
+        all (kept) samples, treating them as founders as for a GWAS of related
+        individuals.
+
+        Parameters:
+            sumstatsFile -- a string pointing to a tab-delimited association results
+                            file with a header row
+            outputPrefix -- a string of the output prefix; '<outputPrefix>.clumps'
+                            and '<outputPrefix>.clumps.log' are written
+            workDir -- a string pointing to the working directory
+            idField -- a string of the variant ID column name of sumstatsFile
+            pField -- a string of the P value column name of sumstatsFile
+            p1, p2, r2, kb -- numbers of the plink2 --clump-p1/p2/r2/kb settings
+            keepIIDs -- (OPTIONAL) a list of IIDs of the samples to compute LD from;
+                        default is all samples
+        Returns:
+            clumpsFile -- a string of the .clumps location, or None if no variant
+                          had P < p1
+        '''
+        clumpsFile = outputPrefix + ".clumps"
+        self.check_outputs_absent([clumpsFile])
+        args = self.inputArgs + ["--make-founders"]
+
+        # Write a --keep file, with FIDs where the fileset has them
+        if keepIIDs is not None:
+            sampleOrder, sampleDict = parse_sample_info(self.write_psam(os.path.join(workDir, "samples")))
+            missing = [ iid for iid in keepIIDs if iid not in sampleDict ]
+            if missing != []:
+                raise ValueError(f"{len(missing)} sample(s) to keep are not in '{self.prefix}' (e.g., '{missing[0]}')")
+            keepFile = os.path.join(workDir, "keep.txt")
+            hasFID = "FID" in sampleDict[sampleOrder[0]]
+            with open(keepFile, "w") as fileOut:
+                fileOut.write("#FID\tIID\n" if hasFID else "#IID\n")
+                for iid in keepIIDs:
+                    fileOut.write((f"{sampleDict[iid]['FID']}\t" if hasFID else "") + iid + "\n")
+            args += ["--keep", keepFile]
+
+        clumpPrefix = os.path.join(workDir, "clump")
+        self.run_plink(args + ["--clump", sumstatsFile, "--clump-id-field", idField, "--clump-p-field", pField,
+                               "--clump-p1", str(p1), "--clump-p2", str(p2), "--clump-r2", str(r2),
+                               "--clump-kb", str(kb)], clumpPrefix)
+        shutil.copy(clumpPrefix + ".log", clumpsFile + ".log")
+
+        # plink2 lists index candidates absent from the fileset rather than failing
+        if os.path.isfile(clumpPrefix + ".clumps.missing_id"):
+            numMissing = PLINK.count_lines(clumpPrefix + ".clumps.missing_id")
+            raise ValueError(f"{numMissing} variant ID(s) with P < {p1} in '{sumstatsFile}' are not in " +
+                             f"'{self.prefix}'; the results and fileset do not match")
+
+        # plink2 writes no .clumps file when no variant has P < p1
+        if not os.path.isfile(clumpPrefix + ".clumps"):
+            return None
+        shutil.move(clumpPrefix + ".clumps", clumpsFile)
+        return clumpsFile
 
     def king(self, outputPrefix, extractFile=None):
         '''

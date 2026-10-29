@@ -19,7 +19,7 @@ from matplotlib.colors import is_color_like
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parsing import read_gz_file, parse_text_list, parse_memory_str
 from subprocess_runners import check_r_packages, r_package_version
-from saige import SAIGE, SAIGE_SUBMODULE_DIR, parse_pc_set
+from saige import SAIGE, SAIGE_SUBMODULE_DIR, parse_pc_set, find_gwas_manifest
 from annotarium_importers import import_annotarium_gff3, import_annotarium_domains
 
 # msa mode
@@ -518,6 +518,47 @@ def validate_sa_gwas(args):
         if args.covarSNPs == [] or len(set(args.covarSNPs)) != len(args.covarSNPs):
             raise ValueError("--covarSNPs must be a comma-separated list of unique variant IDs.")
 
+def validate_sa_summarise(args):
+    '''
+    Validation for arguments used in "saige summarise" mode. Options not given
+    are resolved later from an earlier summary of the same run, or defaults.
+    '''
+    # Validate 'saige gwas' output directory
+    args.gwasDir = os.path.abspath(args.gwasDir)
+    if not os.path.isdir(args.gwasDir):
+        raise FileNotFoundError(f"'saige gwas' output directory (-i {args.gwasDir}) does not exist!")
+    find_gwas_manifest(args.gwasDir)
+
+    # Validate numeric arguments
+    for value, flag, isValid, description in [
+        [args.suggestive, "--suggestive", lambda x: 0 < x <= 1, "a number from 0 to 1"],
+        [args.clumpP2, "--clumpP2", lambda x: 0 < x <= 1, "a number from 0 to 1"],
+        [args.clumpR2, "--clumpR2", lambda x: 0 <= x <= 1, "a number from 0 to 1"],
+        [args.annotateP, "--annotateP", lambda x: 0 < x <= 1, "a number from 0 to 1"],
+        [args.regionGap, "--regionGap", lambda x: x >= 0, "an integer >= 0"],
+        [args.topN, "--topN", lambda x: x >= 1, "a positive integer"],
+        [args.clumpKb, "--clumpKb", lambda x: x >= 1, "a positive integer"],
+        [args.radius, "--radius", lambda x: x >= 0, "an integer >= 0"]]:
+        if value != None and not isValid(value):
+            raise ValueError(f"{flag} must be {description}.")
+    if args.suggestive != None and args.clumpP2 != None and args.clumpP2 < args.suggestive:
+        raise ValueError("--clumpP2 must be >= --suggestive.")
+
+    # Validate annotation files
+    for attr, flag in [["gff3File", "--gff3"], ["annotableFile", "--annotable"], ["chromMap", "--chromMap"]]:
+        if getattr(args, attr) != None:
+            setattr(args, attr, os.path.abspath(getattr(args, attr)))
+            if not os.path.isfile(getattr(args, attr)):
+                raise FileNotFoundError(f"File ({flag} {getattr(args, attr)}) does not exist!")
+    if args.annotariumDir != None:
+        args.annotariumDir = os.path.abspath(args.annotariumDir)
+        if not os.path.isdir(args.annotariumDir):
+            raise FileNotFoundError(f"annotarium location (--annotarium {args.annotariumDir}) does not exist!")
+
+    # Validate plink2 runtime arguments and the Rscript for plot_manhattan.R
+    validate_plink_runtime(args)
+    validate_rscript(args, ["optparse", "data.table", "ggplot2"])
+
 # vcf mode
 def validate_v(args):
     '''
@@ -652,14 +693,14 @@ def validate_v_relabel(args):
     Validation for arguments used by "vcf relabel" mode.
     '''
     # Validate logic of behavioural arguments
-    if args.samplesMetadataTsv == None and args.chromosomesMetadataTsv == None:
-        raise ValueError("Must provide either --samples or --chromosomes for this mode to have something to do!")
+    if args.sampleMap == None and args.chromMap == None:
+        raise ValueError("Must provide either --sampleMap or --chromMap for this mode to have something to do!")
     
-    # Validate metadata file(s)
-    if args.samplesMetadataTsv != None and ( not os.path.isfile(args.samplesMetadataTsv) ):
-        raise FileNotFoundError(f"Samples metadata file (--samples {args.samplesMetadataTsv}) does not exist!")
-    if args.chromosomesMetadataTsv != None and ( not os.path.isfile(args.chromosomesMetadataTsv) ):
-        raise FileNotFoundError(f"Chromosomes metadata file (--chromosomes {args.chromosomesMetadataTsv}) does not exist!")
+    # Validate ID mapping file(s)
+    if args.sampleMap != None and ( not os.path.isfile(args.sampleMap) ):
+        raise FileNotFoundError(f"Samples ID mapping file (--sampleMap {args.sampleMap}) does not exist!")
+    if args.chromMap != None and ( not os.path.isfile(args.chromMap) ):
+        raise FileNotFoundError(f"Chromosomes ID mapping file (--chromMap {args.chromMap}) does not exist!")
 
 def validate_v_stats(args):
     '''
@@ -728,11 +769,11 @@ def validate_v_to_plink(args):
     if args.chromMap is not None:
         args.chromMap = os.path.abspath(args.chromMap)
         if not os.path.isfile(args.chromMap):
-            raise FileNotFoundError(f"Chromosome map file (--chrom {args.chromMap}) does not exist!")
+            raise FileNotFoundError(f"Chromosome map file (--chromMap {args.chromMap}) does not exist!")
     if args.sampleMap is not None:
         args.sampleMap = os.path.abspath(args.sampleMap)
         if not os.path.isfile(args.sampleMap):
-            raise FileNotFoundError(f"Sample map file (--sample {args.sampleMap}) does not exist!")
+            raise FileNotFoundError(f"Sample map file (--sampleMap {args.sampleMap}) does not exist!")
 
     # Validate output location
     args.outputPrefix = os.path.abspath(args.outputPrefix)

@@ -13,15 +13,20 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, re, sys, glob, shutil, statistics, subprocess
+import os, re, sys, glob, json, shutil, statistics, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from statistics import NormalDist
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _version import __version__
 from plink import PLINK, PLINKTool, parse_sample_info
 from subprocess_runners import run_rscript
+from gwas_reporting import parse_lead_variants, LeadGeneReporter
+from annotarium_importers import import_annotarium_gff3, import_annotarium_annotable
 
 SAIGE_SUBMODULE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "external", "SAIGE")
+GWAS_MANIFEST_SUFFIX = ".gwas.json"
 
 class SAIGEPhenotype:
     '''
@@ -272,6 +277,18 @@ class SAIGE(PLINKTool):
         if missing != []:
             raise FileNotFoundError(f"SAIGE directory '{value}' is missing extdata script(s) {missing}")
         self._saigeDir = value
+
+    def source_version(self):
+        '''
+        Returns the SAIGE version of saigeDir's DESCRIPTION file, and its git
+        commit (or None if it is not a git checkout).
+        '''
+        with open(os.path.join(self.saigeDir, "DESCRIPTION"), "r") as fileIn:
+            version = next( (line.split(":", 1)[1].strip() for line in fileIn if line.startswith("Version:")), None )
+        result = subprocess.run(["git", "-C", self.saigeDir, "rev-parse", "HEAD"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        commit = result.stdout.decode("utf-8").strip() if result.returncode == 0 else None
+        return version, commit
 
     @property
     def rscriptExe(self):
@@ -753,6 +770,7 @@ def saige_gwas(args):
 
         # Fit the null model with the pruned variants, then test all variants
         grmBed = saige.as_bed(grmPlink, workDir)
+        grmVariants = PLINK.count_lines(grmBed + ".bim")
         sparseGRM = saige.sparse_grm(grmBed, outputPrefix, workDir)
         tau = saige.fit_null(grmBed, sparseGRM, outputPrefix + ".pheno", covariates, outputPrefix)
         print(f"# Null model GRM variance (tau): {tau:.7g}")
@@ -760,3 +778,336 @@ def saige_gwas(args):
         numTested = saige.test(testBed, sparseGRM, outputPrefix, resultFile, workDir)
     print(f"# Variants tested: {numTested}")
     print(f"# Wrote {resultFile}")
+
+    # Record the inputs and settings for 'saige summarise'
+    manifestFile = write_gwas_manifest(outputPrefix, saige, plink, grmPlink, {
+        "eigenvec": args.eigenvecFile, "phenoColumn": pheno.phenoColumn, "pcs": pcList, "pcTag": tag,
+        "covarSNPs": args.covarSNPs, "samples": counts["written"], "cases": counts["cases"],
+        "tau": tau, "variantsTested": numTested, "grmVariants": grmVariants })
+    print(f"# Wrote {manifestFile}")
+
+def file_record(fileName, relativeTo):
+    '''
+    Describes a file by its location relative to a directory, and its size, so
+    that it can be found after the directories are moved together and changes
+    to it can be noticed.
+    '''
+    return { "path": os.path.relpath(fileName, relativeTo), "size": os.path.getsize(fileName) }
+
+def check_file_record(record, relativeTo, description):
+    '''
+    Returns the absolute location of a file described by file_record(), raising
+    an error if it is missing or its size has changed.
+    '''
+    fileName = os.path.normpath(os.path.join(relativeTo, record["path"]))
+    if not os.path.isfile(fileName):
+        raise FileNotFoundError(f"{description} '{fileName}' no longer exists")
+    if os.path.getsize(fileName) != record["size"]:
+        raise ValueError(f"{description} '{fileName}' has changed since it was recorded")
+    return fileName
+
+def write_gwas_manifest(outputPrefix, saige, plink, grmPlink, analysis):
+    '''
+    Writes a record of a 'saige gwas' run's inputs and settings to
+    '<outputPrefix>.gwas.json', for use by 'saige summarise'. Locations are
+    recorded relative to the output directory.
+
+    Parameters:
+        outputPrefix -- a string of the run's output prefix
+        saige -- the SAIGE object used for the run
+        plink -- a PLINK object of the tested fileset
+        grmPlink -- a PLINK object of the GRM fileset
+        analysis -- a dictionary of run details, structured like:
+                    {
+                        "eigenvec": eigenvecFile, # string
+                        "phenoColumn": column, # string
+                        "pcs": [1, 2], # list of integers
+                        "pcTag": tag, # string
+                        "covarSNPs": [variantID, ...], # list of strings, or None
+                        "samples": int, "cases": int, # samples in the null model
+                        "tau": float, "variantsTested": int,
+                        "grmVariants": int # variants in the GRM fileset
+                    }
+    Returns:
+        manifestFile -- a string of the manifest's location
+    '''
+    manifestFile = outputPrefix + GWAS_MANIFEST_SUFFIX
+    outputDir = os.path.dirname(manifestFile)
+    saigeVersion, saigeCommit = saige.source_version()
+    manifest = {
+        "variantopia": __version__,
+        "saige": { "version": saigeVersion, "commit": saigeCommit },
+        "basename": os.path.basename(outputPrefix),
+        "results": file_record(outputPrefix + ".saige.txt", outputDir),
+        "pheno": file_record(outputPrefix + ".pheno", outputDir),
+        "test": { "prefix": os.path.relpath(plink.prefix, outputDir), "format": plink.fileFormat,
+                  "files": [ file_record(f, outputDir) for f in plink.files ] },
+        "grm": { "prefix": os.path.relpath(grmPlink.prefix, outputDir), "format": grmPlink.fileFormat,
+                 "files": [ file_record(f, outputDir) for f in grmPlink.files ],
+                 "variants": analysis["grmVariants"] },
+        "eigenvec": file_record(analysis["eigenvec"], outputDir),
+        "phenoColumn": analysis["phenoColumn"],
+        "pcs": analysis["pcs"],
+        "pcTag": analysis["pcTag"],
+        "covarSNPs": analysis["covarSNPs"],
+        "settings": { "relCutoff": saige.relCutoff, "grmMarkers": saige.grmMarkers,
+                      "minMAF": saige.minMAF, "minMAC": saige.minMAC },
+        "samples": analysis["samples"],
+        "cases": analysis["cases"],
+        "tau": analysis["tau"],
+        "variantsTested": analysis["variantsTested"]
+    }
+    with open(manifestFile, "w") as fileOut:
+        json.dump(manifest, fileOut, indent=4)
+        fileOut.write("\n")
+    return manifestFile
+
+def find_gwas_manifest(gwasDir):
+    '''
+    Returns the location of the single 'saige gwas' manifest within a directory.
+    '''
+    manifestFiles = glob.glob(os.path.join(gwasDir, "*" + GWAS_MANIFEST_SUFFIX))
+    if len(manifestFiles) != 1:
+        raise FileNotFoundError(f"Expected one '*{GWAS_MANIFEST_SUFFIX}' file from 'saige gwas' in '{gwasDir}', " +
+                                f"but found {len(manifestFiles)}")
+    return manifestFiles[0]
+
+class SAIGESummary:
+    '''
+    Summarises a 'saige gwas' run, writing into its 'summarise' subdirectory:
+        1. plot -- Manhattan and QQ plots, top hits and associated regions
+                   (plot_manhattan.R), with Bonferroni and Meff thresholds; Meff
+                   is the number of GRM (LD-pruned) variants
+        2. clump -- LD clumping of associated variants into independent loci
+                    (plink2 --clump), with LD from the samples in the null model
+        3. annotate -- (OPTIONAL) genes near the lead variants of regions and clumps
+
+    The tested fileset and samples are taken from the run's manifest. Each step's
+    settings are recorded in '<basename>.summary.json', so that a re-run skips
+    steps whose settings and outputs are unchanged, and re-uses recorded settings
+    that are not given again (e.g., to add an annotation to an earlier summary).
+
+    Example:
+        summary = SAIGESummary("output/saige/pc2")
+        options = summary.resolve_options({ "suggestive": None, ... })
+    '''
+    DEFAULTS = { "title": None, "suggestive": 1e-5, "regionGap": 2000000, "topN": 50,
+                 "clumpP2": 0.01, "clumpR2": 0.2, "clumpKb": 2000,
+                 "gff3File": None, "annotableFile": None, "chromMap": None,
+                 "radius": 50000, "annotateP": None, "annotariumDir": None }
+    ANNOTATION_FILES = ["gff3File", "annotableFile", "chromMap"]
+    ANNOTATION_OPTIONS = ANNOTATION_FILES + ["radius", "annotateP"]
+    STEP_OPTIONS = {
+        "plot": ["title", "suggestive", "regionGap", "topN"],
+        "clump": ["suggestive", "clumpP2", "clumpR2", "clumpKb"],
+        "annotate": ["radius", "annotateP"]
+    }
+
+    def __init__(self, gwasDir):
+        self.gwasDir = os.path.abspath(gwasDir)
+        self.manifestFile = find_gwas_manifest(self.gwasDir)
+        with open(self.manifestFile, "r") as fileIn:
+            self.manifest = json.load(fileIn)
+        self.outputDir = os.path.join(self.gwasDir, "summarise")
+        self.outputPrefix = os.path.join(self.outputDir, self.manifest["basename"])
+        self.stateFile = self.outputPrefix + ".summary.json"
+        if os.path.isfile(self.stateFile):
+            with open(self.stateFile, "r") as fileIn:
+                self.state = json.load(fileIn)
+        else:
+            self.state = { "options": {}, "steps": {} }
+
+    def check_inputs(self):
+        '''
+        Checks that the run's results, phenotype file and filesets are unchanged.
+
+        Returns:
+            inputs -- a dictionary with structure like:
+                      {
+                          "results": resultFile, # string
+                          "pheno": phenoFile, # string
+                          "test": (prefix, format) # strings
+                      }
+        '''
+        inputs = {}
+        for key, description in [["results", "SAIGE results file"], ["pheno", "SAIGE phenotype file"]]:
+            inputs[key] = check_file_record(self.manifest[key], self.gwasDir, description)
+        for key, description in [["test", "Tested fileset file"], ["grm", "GRM fileset file"]]:
+            for record in self.manifest[key]["files"]:
+                check_file_record(record, self.gwasDir, description + " (re-run 'saige gwas' if it was remade)")
+        inputs["test"] = (os.path.normpath(os.path.join(self.gwasDir, self.manifest["test"]["prefix"])),
+                          self.manifest["test"]["format"])
+        return inputs
+
+    def resolve_options(self, given):
+        '''
+        Resolves summary options from those given (None if not given), then
+        those recorded by an earlier summary, then defaults. Annotation file
+        locations are recorded relative to the output directory.
+
+        Parameters:
+            given -- a dictionary of option names (as in DEFAULTS) to values or None
+        Returns:
+            options -- a dictionary of option names to resolved values, with
+                       absolute annotation file locations
+        '''
+        recorded = self.state["options"]
+        options = {}
+        for key, default in SAIGESummary.DEFAULTS.items():
+            if given.get(key) is not None:
+                options[key] = given[key]
+            elif key in recorded:
+                options[key] = recorded[key]
+                if key in SAIGESummary.ANNOTATION_FILES and options[key] is not None:
+                    options[key] = os.path.normpath(os.path.join(self.outputDir, options[key]))
+            else:
+                options[key] = default
+
+        # Title the plots with the run's covariates by default
+        if options["title"] is None:
+            covariates = self.manifest["pcTag"] + \
+                         ("".join( f" + {v}" for v in self.manifest["covarSNPs"] ) if self.manifest["covarSNPs"] else "")
+            options["title"] = f"{self.manifest['basename']} ({covariates})"
+
+        # Annotation options other than the GFF3 need one
+        if options["gff3File"] is None:
+            unused = [ key for key in SAIGESummary.ANNOTATION_OPTIONS
+                       if key != "gff3File" and given.get(key) is not None ]
+            if unused != []:
+                raise ValueError(f"Annotation option(s) {unused} need a GFF3 (--gff3), which was not given now " +
+                                 "or in an earlier summary")
+        elif options["annotariumDir"] is None:
+            raise ValueError("Gene annotation needs the annotarium repository location (--annotarium)")
+        return options
+
+    def record_options(self, options):
+        self.state["options"] = { key: (os.path.relpath(value, self.outputDir)
+                                        if key in SAIGESummary.ANNOTATION_FILES and value is not None else value)
+                                  for key, value in options.items() }
+        self.save_state()
+
+    def save_state(self):
+        with open(self.stateFile, "w") as fileOut:
+            json.dump(self.state, fileOut, indent=4)
+            fileOut.write("\n")
+
+    def is_current(self, step, params):
+        '''
+        Checks whether a step was previously run with these parameters, and its
+        outputs still exist.
+        '''
+        previous = self.state["steps"].get(step)
+        return previous is not None and previous["params"] == params and \
+               all( os.path.isfile(os.path.join(self.outputDir, f)) for f in previous["outputs"] )
+
+    def start_step(self, step, possibleOutputs):
+        '''
+        Removes the outputs of a step's previous run before it is re-run.
+        '''
+        previous = self.state["steps"].pop(step, { "outputs": [] })
+        self.save_state()
+        for fileName in set(possibleOutputs) | { os.path.join(self.outputDir, f) for f in previous["outputs"] }:
+            if os.path.isfile(fileName):
+                os.remove(fileName)
+
+    def finish_step(self, step, params, outputs):
+        self.state["steps"][step] = { "params": params, "outputs": [ os.path.basename(f) for f in outputs ] }
+        self.save_state()
+
+def saige_summarise(args):
+    '''
+    Handles "saige summarise" mode of variantopia.
+    '''
+    summary = SAIGESummary(args.gwasDir)
+    inputs = summary.check_inputs()
+    options = summary.resolve_options({ key: getattr(args, key) for key in SAIGESummary.DEFAULTS })
+    os.makedirs(summary.outputDir, exist_ok=True)
+    summary.record_options(options)
+    outputPrefix = summary.outputPrefix
+    resultsRecord = summary.manifest["results"]
+    print(f"# Summarising '{inputs['results']}' ({summary.manifest['pcTag']}; " +
+          f"{summary.manifest['samples']} samples) into '{summary.outputDir}'")
+
+    # Step 1: Manhattan and QQ plots, top hits and associated regions
+    meff = summary.manifest["grm"]["variants"]
+    plotParams = { "results": resultsRecord, "meff": meff,
+                   **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["plot"] } }
+    plotOutputs = [ outputPrefix + suffix for suffix in [".manhattan.png", ".qq.png", ".top_hits.tsv", ".plot.log"] ]
+    regionsFile = outputPrefix + ".regions.tsv"
+    plotRan = not summary.is_current("plot", plotParams)
+    if plotRan:
+        summary.start_step("plot", plotOutputs + [regionsFile])
+        suggestive = f"{options['suggestive']:g}"
+        run_rscript("plot_manhattan.R", ["-i", inputs["results"], "-o", outputPrefix, "--sig", "bonferroni",
+                                         "--meff", str(meff), "--suggestive", suggestive, "--annotate", suggestive,
+                                         "--region_p", suggestive, "--region_gap", f"{options['regionGap']:g}",
+                                         "--top_n", str(options["topN"]), "--title", options["title"]],
+                    args.rscript, logFile=outputPrefix + ".plot.log")
+        with open(outputPrefix + ".plot.log", "r") as fileIn:
+            for line in fileIn:
+                if not line.startswith("Program completed"):
+                    print("# " + line.rstrip("\r\n"))
+        summary.finish_step("plot", plotParams, plotOutputs + ([regionsFile] if os.path.isfile(regionsFile) else []))
+        print(f"# Wrote plots, top hits and regions to {outputPrefix}.*")
+    else:
+        print("# Plots and regions are up to date; skipping")
+
+    # Step 2: Clump associated variants into independent loci, using LD among the
+    # samples in the null model; index variants must reach the suggestive threshold,
+    # and clumped variants are those within --clumpKb and r^2 >= --clumpR2 of one
+    with open(inputs["pheno"], "r") as fileIn:
+        iidIndex = fileIn.readline().rstrip("\r\n").split("\t").index("IID")
+        keepIIDs = [ line.rstrip("\r\n").split("\t")[iidIndex] for line in fileIn ]
+    clumpParams = { "results": resultsRecord, "samples": len(keepIIDs),
+                    **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["clump"] } }
+    clumpsFile = outputPrefix + ".clumps"
+    clumpRan = not summary.is_current("clump", clumpParams)
+    if clumpRan:
+        summary.start_step("clump", [clumpsFile, clumpsFile + ".log"])
+        plink = PLINK(*inputs["test"])
+        plink.threads, plink.memory, plink.tmpDir, plink.keepTmp = args.threads, args.memory, args.tmpDir, args.keepTmp
+        if args.plink2 is not None:
+            plink.plinkExe = args.plink2
+        with plink.work_dir(outputPrefix) as workDir:
+            clumped = plink.clump(inputs["results"], outputPrefix, workDir, idField="MarkerID", pField="p.value",
+                                  p1=options["suggestive"], p2=options["clumpP2"], r2=options["clumpR2"],
+                                  kb=options["clumpKb"], keepIIDs=keepIIDs)
+        if clumped is None:
+            print(f"# No variants reached P < {options['suggestive']:g}; no clumps written")
+        else:
+            print(f"# Independent loci (index P < {options['suggestive']:g}): {PLINK.count_lines(clumpsFile) - 1}")
+        summary.finish_step("clump", clumpParams, [clumpsFile + ".log"] + ([clumpsFile] if clumped else []))
+    else:
+        print("# Clumps are up to date; skipping")
+
+    # Step 3: Optionally, relate lead variants of regions and clumps to nearby genes
+    if options["gff3File"] is None:
+        print("# No GFF3 given; skipping gene annotation")
+        return
+    annotateParams = { key: (file_record(options[key], summary.outputDir) if options[key] is not None else None)
+                       for key in SAIGESummary.ANNOTATION_FILES }
+    annotateParams.update({ key: options[key] for key in SAIGESummary.STEP_OPTIONS["annotate"] })
+    annotateParams.update({ "plot": plotParams, "clump": clumpParams })
+    leadGenesFile = outputPrefix + ".lead_genes.tsv"
+    if not (plotRan or clumpRan) and summary.is_current("annotate", annotateParams):
+        print("# Gene annotation is up to date; skipping")
+        return
+    summary.start_step("annotate", [leadGenesFile])
+    GFF3Feature, GFF3Tarium = import_annotarium_gff3(options["annotariumDir"])
+    reporter = LeadGeneReporter(GFF3Tarium(options["gff3File"]),
+                                import_annotarium_annotable(options["annotariumDir"])(options["annotableFile"])
+                                if options["annotableFile"] is not None else None)
+    reporter.chromMap = options["chromMap"]
+    reporter.radius = options["radius"]
+    leads = parse_lead_variants(regionsFile if os.path.isfile(regionsFile) else None,
+                                clumpsFile if os.path.isfile(clumpsFile) else None)
+    if options["annotateP"] is not None:
+        leads = [ lead for lead in leads if float(lead["p"]) < options["annotateP"] ]
+    counts = reporter.write(leads, leadGenesFile)
+    if counts["missingSeqids"] != []:
+        print(f"# WARNING: lead variant seqid(s) {counts['missingSeqids']} have no genes in the GFF3; " +
+              "check --chromMap")
+    print(f"# Lead variants annotated: {counts['leads']} ({counts['withGenes']} with genes within " +
+          f"{options['radius']} bp; {counts['genes']} lead variant-gene pairs)")
+    summary.finish_step("annotate", annotateParams, [leadGenesFile])
+    print(f"# Wrote {leadGenesFile}")
