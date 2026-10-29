@@ -898,9 +898,9 @@ def find_gwas_manifest(gwasDir):
 class SAIGESummary:
     '''
     Summarises a 'saige gwas' run, writing into its 'summarise' subdirectory:
-        1. plot -- Manhattan and QQ plots, top hits and associated regions
-                   (plot_manhattan.R), with Bonferroni and Meff thresholds; Meff
-                   is the number of GRM (LD-pruned) variants
+        1. plot -- Manhattan and QQ plots, top hits, per-chromosome lambda GC and
+                   associated regions (plot_manhattan.R), with Bonferroni and
+                   Meff thresholds; Meff is the number of GRM (LD-pruned) variants
         2. clump -- LD clumping of associated variants into independent loci
                     (plink2 --clump), with LD from the samples in the null model
         3. inspect -- the direction of each lead variant's effect, the families its
@@ -1026,14 +1026,16 @@ class SAIGESummary:
             json.dump(self.state, fileOut, indent=4)
             fileOut.write("\n")
 
-    def is_current(self, step, params):
+    def is_current(self, step, params, required=[]):
         '''
         Checks whether a step was previously run with these parameters, and its
-        outputs still exist.
+        outputs still exist, along with any required outputs (e.g., those added
+        to a step since an earlier summary was made).
         '''
         previous = self.state["steps"].get(step)
         return previous is not None and previous["params"] == params and \
-               all( os.path.isfile(os.path.join(self.outputDir, f)) for f in previous["outputs"] )
+               all( os.path.isfile(os.path.join(self.outputDir, f)) for f in previous["outputs"] ) and \
+               all( os.path.isfile(f) for f in required )
 
     def start_step(self, step, possibleOutputs):
         '''
@@ -1138,9 +1140,10 @@ def saige_summarise(args):
     meff = summary.manifest["grm"]["variants"]
     plotParams = { "version": __version__, "results": resultsRecord, "meff": meff,
                    **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["plot"] } }
-    plotOutputs = [ outputPrefix + suffix for suffix in [".manhattan.png", ".qq.png", ".top_hits.tsv", ".plot.log"] ]
+    plotOutputs = [ outputPrefix + suffix for suffix in [".manhattan.png", ".qq.png", ".top_hits.tsv",
+                                                          ".chrom_lambda.tsv", ".plot.log"] ]
     regionsFile = outputPrefix + ".regions.tsv"
-    plotRan = not summary.is_current("plot", plotParams)
+    plotRan = not summary.is_current("plot", plotParams, plotOutputs)
     if plotRan:
         summary.start_step("plot", plotOutputs + [regionsFile])
         suggestive = f"{options['suggestive']:g}"
@@ -1154,7 +1157,7 @@ def saige_summarise(args):
                 if not line.startswith("Program completed"):
                     print("# " + line.rstrip("\r\n"))
         summary.finish_step("plot", plotParams, plotOutputs + ([regionsFile] if os.path.isfile(regionsFile) else []))
-        print(f"# Wrote plots, top hits and regions to {outputPrefix}.*")
+        print(f"# Wrote plots, top hits, per-chromosome lambda and regions to {outputPrefix}.*")
     else:
         print("# Plots and regions are up to date; skipping")
 

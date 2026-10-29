@@ -10,8 +10,9 @@
 # Requires: R packages optparse, data.table, ggplot2
 #
 # Outputs:
-#   <prefix>.manhattan.png, <prefix>.qq.png, <prefix>.top_hits.tsv, and
-#   <prefix>.regions.tsv if any variant has P < --region_p
+#   <prefix>.manhattan.png, <prefix>.qq.png, <prefix>.top_hits.tsv,
+#   <prefix>.chrom_lambda.tsv, and <prefix>.regions.tsv if any variant has
+#   P < --region_p
 
 suppressPackageStartupMessages({
     library(optparse)
@@ -114,6 +115,20 @@ cat(sprintf("Min P: %.3g\n", min(gwas$P)))
 if (!is.na(sigLine)) cat(sprintf("Significance threshold: %.3g (%d variants pass)\n", sigLine, sum(gwas$P < sigLine)))
 if (!is.na(meffLine)) cat(sprintf("Meff threshold: %.3g (%d variants pass)\n", meffLine, sum(gwas$P < meffLine)))
 if (!is.na(suggestiveLine)) cat(sprintf("Suggestive threshold: %.3g (%d variants pass)\n", suggestiveLine, sum(gwas$P < suggestiveLine)))
+
+# Per-chromosome inflation: a large-effect locus in a family population drags
+# whole chromosome segments into association, raising lambda on its own
+# chromosome(s), whereas confounding raises it on all of them
+chromLambda <- gwas[, .(N_VARIANTS=.N,
+                        LAMBDA_GC=round(median(qchisq(P, df=1, lower.tail=FALSE)) / qchisq(0.5, df=1), 4),
+                        MIN_P=signif(min(P), 3),
+                        N_SIG=if (is.na(sigLine)) NA_integer_ else sum(P < sigLine),
+                        N_SUGGESTIVE=if (is.na(suggestiveLine)) NA_integer_ else sum(P < suggestiveLine)),
+                    keyby=CHR]
+fwrite(chromLambda, paste0(opt$output, ".chrom_lambda.tsv"), sep="\t")
+cat(sprintf("Per-chromosome lambda GC: %.3f (%s) to %.3f (%s)\n",
+            min(chromLambda$LAMBDA_GC), chromLambda$CHR[which.min(chromLambda$LAMBDA_GC)],
+            max(chromLambda$LAMBDA_GC), chromLambda$CHR[which.max(chromLambda$LAMBDA_GC)]))
 
 ###########################################################################
 ##                                                                       ##
