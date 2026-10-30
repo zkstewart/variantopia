@@ -1564,6 +1564,7 @@ def main():
                             (as columns) in the output table; default is to use the VCF header order""",
                             default=None)
     
+    group_arguments(subParentParser)
     args = subParentParser.parse_args()
     
     # Split into mode-specific functions
@@ -1595,6 +1596,41 @@ def main():
     
     # Print completion flag if we reach this point
     print("Program completed successfully!")
+
+def group_arguments(parser):
+    '''
+    Splits the options of a parser, and of all its subparsers, into "required
+    arguments" and "optional arguments" sections of their help, leaving -h and
+    -v under "options". Members of a required mutually exclusive group (one of
+    which must be given) are listed as required.
+
+    Parameters:
+        parser -- an argparse.ArgumentParser whose arguments have all been added
+    '''
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                group_arguments(subparser)
+    
+    options = parser._optionals
+    movable = [ action for action in options._group_actions
+                if not isinstance(action, (argparse._HelpAction, argparse._VersionAction, argparse._SubParsersAction)) ]
+    if movable == []:
+        return
+    requiredInGroup = { action for group in parser._mutually_exclusive_groups if group.required
+                        for action in group._group_actions }
+    
+    requiredGroup = parser.add_argument_group("required arguments")
+    optionalGroup = parser.add_argument_group("optional arguments")
+    for action in movable:
+        options._group_actions.remove(action)
+        if action.required or action in requiredInGroup:
+            requiredGroup._group_actions.append(action)
+        else:
+            optionalGroup._group_actions.append(action)
+    for group in [requiredGroup, optionalGroup]:
+        if group._group_actions == []:
+            parser._action_groups.remove(group)
 
 def bmain(args):
     print("BayeScan handling complete!")
