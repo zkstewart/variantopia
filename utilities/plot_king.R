@@ -11,6 +11,7 @@
 #
 # Outputs:
 #   <prefix>.heatmap.png    clustered kinship heatmap with recorded parents
+#                           (.pdf with --format pdf)
 #
 # Requires: R packages optparse, data.table, ggplot2
 
@@ -29,12 +30,15 @@ optionList <- list(
     make_option(c("-o", "--output"), type="character", help="Output file prefix"),
     make_option("--linkage", type="character", default="average",
                 help="hclust linkage method [default %default]"),
+    make_option("--format", type="character", default="png",
+                help="Plot file format; 'png' or 'pdf' (vector graphics, e.g., for editing) [default %default]"),
     make_option("--title", type="character", default="", help="Plot title")
 )
 opt <- parse_args(OptionParser(option_list=optionList))
 for (req in c("kin0", "fam", "output")) {
     if (is.null(opt[[req]])) stop(sprintf("--%s is required", req))
 }
+if (!opt$format %in% c("png", "pdf")) stop("--format must be 'png' or 'pdf'")
 
 ###########################################################################
 ##                                                                       ##
@@ -186,7 +190,7 @@ p <- ggplot() +
     theme_void() +
     theme(plot.margin=margin(10, 10, 10, 10))
 
-ggsave(paste0(opt$output, ".heatmap.png"), p, width=plotHeight * 1.35 + 2, height=plotHeight, dpi=200,
+ggsave(paste0(opt$output, ".heatmap.", opt$format), p, width=plotHeight * 1.35 + 2, height=plotHeight, dpi=200,
        limitsize=FALSE, bg="white")
 cat(sprintf("%d samples; %d recorded parents; %d failed parent-offspring pairs marked\n",
             numSamples, length(parents), nrow(failedDf)))

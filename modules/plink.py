@@ -1591,12 +1591,14 @@ def plink_king(args):
     kingPrefix = os.path.join(args.outputDirectory, os.path.basename(args.plinkPrefix) + ".king")
     checkFile = kingPrefix + ".pedigree_check.tsv"
     heatmapFile = kingPrefix + ".heatmap.png"
-    plink.check_outputs_absent([checkFile, heatmapFile])
+    samplesFile = kingPrefix + ".samples.psam"
+    plink.check_outputs_absent([checkFile, heatmapFile, samplesFile])
     kin0File = plink.king(kingPrefix, args.extractFile)
     print(f"# Wrote {kin0File}")
 
     with plink.work_dir(kingPrefix) as workDir:
-        psamFile = plink.write_psam(os.path.join(workDir, "samples"))
+        # Kept alongside the outputs so that the plot's command file can re-make it
+        psamFile = shutil.copy(plink.write_psam(os.path.join(workDir, "samples")), samplesFile)
 
         # Check recorded parent-offspring pairs
         king = KING(kin0File, psamFile)
@@ -1612,8 +1614,8 @@ def plink_king(args):
 
         # Plot clustered kinship with recorded parents
         run_rscript("plot_king.R", ["-k", kin0File, "-f", psamFile, "-c", checkFile,
-                                    "-o", kingPrefix, "--title", args.title],
-                    args.rscript, logFile=kingPrefix + ".plot.log")
+                                    "-o", kingPrefix, "--title", args.title, "--format", "png"],
+                    args.rscript, logFile=kingPrefix + ".plot.log", commandFile=kingPrefix + ".plot.sh")
     print(f"# Wrote {heatmapFile}")
 
 def plink_pca(args):
@@ -1630,17 +1632,19 @@ def plink_pca(args):
     # Run PCA
     pcaPrefix = os.path.join(args.outputDirectory, os.path.basename(args.plinkPrefix) + ".pca")
     plotFiles = [ pcaPrefix + suffix for suffix in [".summary.tsv", ".scree.png", ".pcs.png", ".loadings.png"] ]
-    plink.check_outputs_absent(plotFiles)
+    samplesFile = pcaPrefix + ".samples.psam"
+    plink.check_outputs_absent(plotFiles + [samplesFile])
     eigenvecFile, eigenvalFile, loadingsFile = plink.pca(pcaPrefix)
     print(f"# Wrote {', '.join([eigenvecFile, eigenvalFile, loadingsFile])}")
 
     # Plot PCA diagnostics, using a .psam to obtain family IDs and phenotypes
     with plink.work_dir(pcaPrefix) as workDir:
-        psamFile = plink.write_psam(os.path.join(workDir, "samples"))
+        # Kept alongside the outputs so that the plot's command file can re-make it
+        psamFile = shutil.copy(plink.write_psam(os.path.join(workDir, "samples")), samplesFile)
         run_rscript("plot_pca.R", ["-e", eigenvecFile, "-v", eigenvalFile, "-f", psamFile,
                                    "-l", loadingsFile, "-o", pcaPrefix, "--title", args.title,
-                                   "--plot_pcs", str(args.plotPCs)],
-                    args.rscript, logFile=pcaPrefix + ".plot.log")
+                                   "--plot_pcs", str(args.plotPCs), "--format", "png"],
+                    args.rscript, logFile=pcaPrefix + ".plot.log", commandFile=pcaPrefix + ".plot.sh")
     print(f"# Wrote {', '.join(plotFiles)}")
 
 def plink_prune(args):

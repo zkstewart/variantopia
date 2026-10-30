@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os, shutil, subprocess
+import os, shlex, shutil, subprocess
 
 def run_tabix(vcfFile, tabixExe=None):
     '''
@@ -98,7 +98,7 @@ def check_r_packages(packages, rscriptExe):
         raise Exception(f"Rscript failed to check for R packages; stderr was:\n{result.stderr.decode('utf-8')}")
     return result.stdout.decode("utf-8").split()
 
-def run_rscript(scriptName, args, rscriptExe, logFile=None):
+def run_rscript(scriptName, args, rscriptExe, logFile=None, commandFile=None):
     '''
     Runs an R script from the variantopia utilities directory.
 
@@ -108,12 +108,17 @@ def run_rscript(scriptName, args, rscriptExe, logFile=None):
         rscriptExe -- path to the Rscript executable
         logFile -- (OPTIONAL) a string of a location to write the script's
                    stdout and stderr to
+        commandFile -- (OPTIONAL) a string of a location to write a shell script
+                       that re-runs the R script with the same arguments (e.g.,
+                       so that a plot can be re-made with '--format pdf')
     '''
     scriptFile = os.path.join(UTILITIES_DIR, scriptName)
     if not os.path.isfile(scriptFile):
         raise FileNotFoundError(f"R script '{scriptFile}' not found")
 
     cmd = [rscriptExe, scriptFile] + args
+    if commandFile is not None:
+        write_command_file(cmd, commandFile)
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output = result.stdout.decode("utf-8")
     if logFile is not None:
@@ -122,6 +127,32 @@ def run_rscript(scriptName, args, rscriptExe, logFile=None):
     if result.returncode != 0:
         raise Exception(f"{scriptName} failed with exit code {result.returncode}; command was " +
                         f"'{' '.join(cmd)}'. Output tail:\n" + "\n".join(output.splitlines()[-15:]))
+
+def write_command_file(cmd, commandFile):
+    '''
+    Writes a shell script that re-runs a plotting command, one argument per line
+    so that individual arguments (such as --format) are easy to edit.
+
+    Parameters:
+        cmd -- a list of strings of the command and its arguments
+        commandFile -- a string of the shell script location to write
+    '''
+    lines = [ shlex.quote(cmd[0]) + " " + shlex.quote(cmd[1]) ]
+    i = 2
+    while i < len(cmd):
+        # Keep each option on one line with its value
+        if cmd[i].startswith("-") and i + 1 < len(cmd) and not cmd[i+1].startswith("-"):
+            lines.append(shlex.quote(cmd[i]) + " " + shlex.quote(cmd[i+1]))
+            i += 2
+        else:
+            lines.append(shlex.quote(cmd[i]))
+            i += 1
+    with open(commandFile, "w") as fileOut:
+        fileOut.write("#!/usr/bin/env bash\n")
+        fileOut.write(f"# Re-makes the plots of variantopia's {os.path.basename(cmd[1])}, overwriting them.\n")
+        fileOut.write("# Change '--format png' to '--format pdf' for vector graphics (e.g., for\n")
+        fileOut.write("# editing before publication); PDFs are written alongside the PNGs.\n")
+        fileOut.write(" \\\n    ".join(lines) + "\n")
 
 def r_package_version(package, rscriptExe):
     '''

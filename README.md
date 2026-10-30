@@ -39,42 +39,34 @@ python /location/of/variantopia/variantopia.py stats \
 Download variantopia by cloning the repository as below. It is available as a collection of Python scripts, so no further installation or compilation is necessary.
 
 ```
-git clone https://github.com/zkstewart/variantopia.git
+git clone --recurse-submodules https://github.com/zkstewart/variantopia.git
 ```
 
 ## Prerequisites
 variantopia is written in Python and requires a modern version 3. It makes use of several other Python packages which include:
 - biopython (https://biopython.org/)
+- cyvcf2 (https://github.com/brentp/cyvcf2)
+- matplotlib (https://matplotlib.org/)
+- ncls (https://pypi.org/project/ncls)
 - numpy (https://numpy.org/)
 - pandas (https://pandas.pydata.org/)
-- matplotlib (https://matplotlib.org/)
-- cyvcf2 (https://github.com/brentp/cyvcf2)
-- ncls (https://pypi.org/project/ncls)
 - plotly (https://plotly.com/python/)
 - pyCirclize (https://github.com/moshi4/pyCirclize)
 - pyMSAviz (https://github.com/moshi4/pyMSAviz)
+- SciPy (https://scipy.org/)
 
-It also calls upon the external programs **tabix** and **bcftools** (https://www.htslib.org)
+It also calls upon the external programs **tabix** and **bcftools** (https://www.htslib.org) for various operations involving VCF files.
 
-The `plink` and `vcf to plink` modes call upon **plink2** (https://www.cog-genomics.org/plink/2.0/), and plotting within `plink` and `saige` modes calls upon **R** with the packages optparse, data.table and ggplot2.
+The `plink` and `vcf to plink` modes call upon **plink2** (https://www.cog-genomics.org/plink/2.0/).
 
-### SAIGE (for `saige` modes)
-The `saige` modes run **SAIGE** (https://github.com/saigegit/SAIGE); if you use them, please cite SAIGE. variantopia pins a compatible SAIGE version as a git submodule at `external/SAIGE`, which is not downloaded by a plain clone. Obtain it by cloning with `--recurse-submodules`, or within an existing clone:
+The `saige` mode calls upon **SAIGE** (https://saigegit.github.io/SAIGE-doc/), which comes embedded within this repository.
 
-```
-git submodule update --init external/SAIGE
-```
-
-The SAIGE R package must also be installed, at the same version as the submodule. SAIGE provides a pixi environment for this (see its `pixi.toml` and `docker/Dockerfile`); if that environment is built within `external/SAIGE`, variantopia finds its Rscript automatically. Otherwise, specify an Rscript with SAIGE installed using `--saigeRscript`, or another SAIGE checkout using `--saigeDir`. variantopia checks that the installed SAIGE package version matches the SAIGE scripts it runs.
-
-`saige calibrate` and `saige gwas` analyse a binary (case/control) trait by default, with a logistic mixed model, or a quantitative trait with `--traitType quantitative`, with a linear mixed model. `saige gwas` records its inputs and settings in a `<prefix>.gwas.json` file within its output directory, so that `saige summarise` needs only that directory. Summaries are written to its `summarise` subdirectory; re-running `saige summarise` skips steps whose settings and variantopia version are unchanged, so an annotation (`--gff3`, and optionally `--annotable`) can be added to an earlier summary. Each lead variant of a region or clump is also inspected (`<prefix>.leads.tsv` and `<prefix>.lead_families.tsv`): the direction of its effect, the families its effect allele segregates in, its parental origin and Mendelian errors (where parents are genotyped in the fileset), the number of suggestive variants near it, and whether its genotypes are in LD with a stronger lead on another chromosome beyond what is seen between LD-pruned variants on different chromosomes; the latter flags candidate 'ghost' associations, such as those from reads mis-mapped from a stronger locus to paralogous or rearranged sequence. Gene annotation requires the annotarium repository (https://github.com/zkstewart/annotarium), given with `--annotarium`.
-
-variantopia has been developed on Linux and within Windows Subsystem for Linux (WSL); it is not currently compatible with plain Windows.
+Plotting within `plink` and `saige` modes calls upon **R** (https://www.r-project.org/) with the packages optparse, data.table, ggplot2, and png.
 
 ## Installation suggestions
 If you are interested in running variantopia, you should ideally set up an Anaconda or Miniconda environment containing a recent Python 3 version. All Python packages listed above are available through community channels including conda-forge.
 
-The external programs can be installed through the bioconda channel, or you may opt to install them yourself by following any instructions detailed at the provided websites.
+The external programs can be installed through the bioconda and conda-forge channels, or you may opt to install them yourself by following any instructions detailed at the provided websites.
 
 See the [Installing variantopia wiki page](https://github.com/zkstewart/variantopia/wiki/Installing-variantopia) for more information.
 
@@ -91,4 +83,6 @@ python /location/of/variantopia.py reformat table -h
 Otherwise, refer to the [variantopia wiki](https://github.com/zkstewart/variantopia/wiki) for more detailed information on the program.
 
 # How to cite
-There are no plans to publish any of the code in this repository. However, if you do find any of this useful in your own work, please feel free to link to this repository in your manuscript.
+There are no plans to publish this repository as a scientific package. Specific aspects of it may be used in publications, and if you find yourself following along with their Methodology by using variantopia, please cite that paper.
+
+If you find no publications involving this author that describe something in variantopia, and you do find variantopia useful in your own work, please feel free to link to this repository in your manuscript.

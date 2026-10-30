@@ -7,10 +7,10 @@
 # Example:
 #   Rscript plot_manhattan.R -i reticulata.saige.txt -o reticulata --title "C. reticulata"
 #
-# Requires: R packages optparse, data.table, ggplot2
+# Requires: R packages optparse, data.table, ggplot2 (and png, for --format pdf)
 #
 # Outputs:
-#   <prefix>.manhattan.png, <prefix>.qq.png, <prefix>.top_hits.tsv,
+#   <prefix>.manhattan.png, <prefix>.qq.png (.pdf with --format pdf), <prefix>.top_hits.tsv,
 #   <prefix>.chrom_lambda.tsv, and <prefix>.regions.tsv if any variant has
 #   P < --region_p
 
@@ -60,6 +60,12 @@ optionList <- list(
                            "written to <prefix>.regions.tsv [default %default]")),
     make_option("--region_gap", type="double", default=2e6,
                 help="Maximum gap (bp) between variants merged into one region [default %default]"),
+    make_option("--format", type="character", default="png",
+                help="Plot file format; 'png' or 'pdf' (vector graphics, e.g., for editing) [default %default]"),
+    make_option("--raster_dpi", type="integer", default=300,
+                help=paste("With --format pdf, the resolution at which dense point layers are embedded",
+                           "as images, keeping the PDF small enough to edit; 0 keeps them as vector",
+                           "points [default %default]")),
     make_option("--width", type="double", default=12,
                 help="Manhattan plot width in inches [default %default]"),
     make_option("--height", type="double", default=5,
@@ -69,11 +75,55 @@ opt <- parse_args(OptionParser(option_list=optionList))
 if (is.null(opt$input) || is.null(opt$output)) {
     stop("-i/--input and -o/--output are required")
 }
+if (!opt$format %in% c("png", "pdf")) stop("--format must be 'png' or 'pdf'")
+rasterise <- opt$format == "pdf" && opt$raster_dpi > 0
+if (rasterise && !requireNamespace("png", quietly=TRUE)) {
+    stop("--format pdf needs the R package 'png' to embed dense points as images; install it, or use --raster_dpi 0")
+}
 
 parse_threshold <- function(value, nTests) {
     if (is.na(value) || value == "none") return(NA_real_)
     if (value == "bonferroni") return(0.05 / nTests)
     as.numeric(value)
+}
+
+###########################################################################
+##                                                                       ##
+##                          RASTERISED POINTS                            ##
+##                                                                       ##
+###########################################################################
+
+# Dense point layers make very large PDFs (millions of vector points) that are
+# slow to open and edit. rasterised_points() is a drop-in for geom_point() that
+# draws its points as one embedded image at --raster_dpi, sized to its panel
+# when the plot is drawn, while axes, labels, lines and text remain vectors.
+# Requires the 'png' R package.
+rasterised_points <- function(..., dpi=300) {
+    layer <- geom_point(...)
+    parent <- layer$geom
+    layer$geom <- ggproto(NULL, parent,
+        draw_panel=function(self, ...) {
+            grob <- ggproto_parent(parent, self)$draw_panel(...)
+            grid::gTree(children=grid::gList(grob), dpi=dpi, cl="rasterised_points")
+        })
+    layer
+}
+# grid draws a gTree via its makeContent() method, found here by S3 dispatch
+makeContent.rasterised_points <- function(x) {
+    width <- grid::convertWidth(grid::unit(1, "npc"), "in", valueOnly=TRUE)
+    height <- grid::convertHeight(grid::unit(1, "npc"), "in", valueOnly=TRUE)
+    imageFile <- tempfile(fileext=".png")
+    currentDevice <- grDevices::dev.cur()
+    grDevices::png(imageFile, width=width, height=height, units="in", res=x$dpi, bg="transparent", type="cairo")
+    # Points are in native units, which span 0-1 in a panel as in a new viewport
+    grid::grid.newpage()
+    grid::pushViewport(grid::viewport())
+    grid::grid.draw(x$children)
+    grDevices::dev.off()
+    grDevices::dev.set(currentDevice)
+    image <- png::readPNG(imageFile)
+    unlink(imageFile)
+    grid::setChildren(x, grid::gList(grid::rasterGrob(image, width=grid::unit(width, "in"), height=grid::unit(height, "in"))))
 }
 
 ###########################################################################
@@ -152,8 +202,17 @@ plotDf <- rbind(
                                  YBIN=round(LOGP, 2))], by=c("XBIN", "YBIN"))[, !c("XBIN", "YBIN")]
 )
 
+# For a PDF, points below the lowest threshold line are embedded as an image,
+# while those above it remain vectors so that hits can be edited
+if (rasterise) {
+    vectorLimit <- -log10(max(c(sigLine, meffLine, suggestiveLine, 1e-5), na.rm=TRUE))
+    pointLayers <- list(rasterised_points(data=plotDf[LOGP < vectorLimit], size=0.6, alpha=0.8, dpi=opt$raster_dpi),
+                        geom_point(data=plotDf[LOGP >= vectorLimit], size=0.6, alpha=0.8))
+} else {
+    pointLayers <- geom_point(size=0.6, alpha=0.8)
+}
 p <- ggplot(plotDf, aes(x=BPCUM, y=LOGP, colour=CHR)) +
-    geom_point(size=0.6, alpha=0.8) +
+    pointLayers +
     scale_colour_manual(values=rep(c("#1F4E79", "#7FA7D1"), length.out=length(chromOrder)), guide="none") +
     scale_x_continuous(breaks=axisDf$CENTER, labels=axisDf$CHR, expand=c(0.01, 0)) +
     scale_y_continuous(expand=expansion(mult=c(0, 0.08))) +
@@ -176,7 +235,7 @@ if (!is.na(opt$annotate)) {
     }
 }
 
-ggsave(paste0(opt$output, ".manhattan.png"), p, width=opt$width, height=opt$height, dpi=300)
+ggsave(paste0(opt$output, ".manhattan.", opt$format), p, width=opt$width, height=opt$height, dpi=300)
 
 ###########################################################################
 ##                                                                       ##
@@ -197,7 +256,7 @@ q <- ggplot(qqPlot, aes(x=EXP, y=OBS)) +
     labs(x=expression(Expected~-log[10](italic(P))), y=expression(Observed~-log[10](italic(P))),
          title=opt$title, subtitle=sprintf("lambda GC = %.3f", lambdaGC)) +
     theme_bw()
-ggsave(paste0(opt$output, ".qq.png"), q, width=5, height=5, dpi=300)
+ggsave(paste0(opt$output, ".qq.", opt$format), q, width=5, height=5, dpi=300)
 
 ###########################################################################
 ##                                                                       ##

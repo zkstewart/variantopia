@@ -11,7 +11,7 @@
 #   Rscript plot_calibration.R -i x.pc_calibration.tsv -o x.pc_calibration
 #
 # Outputs:
-#   <prefix>.png    lambda GC and tau for each PC set
+#   <prefix>.png    lambda GC and tau for each PC set (.pdf with --format pdf)
 #
 # Requires: R packages optparse, data.table, ggplot2
 
@@ -24,12 +24,15 @@ suppressPackageStartupMessages({
 optionList <- list(
     make_option(c("-i", "--input"), type="character", help="PC calibration TSV (from variantopia 'saige calibrate')"),
     make_option(c("-o", "--output"), type="character", help="Output file prefix"),
+    make_option("--format", type="character", default="png",
+                help="Plot file format; 'png' or 'pdf' (vector graphics, e.g., for editing) [default %default]"),
     make_option("--title", type="character", default="", help="Plot title")
 )
 opt <- parse_args(OptionParser(option_list=optionList))
 for (req in c("input", "output")) {
     if (is.null(opt[[req]])) stop(sprintf("--%s is required", req))
 }
+if (!opt$format %in% c("png", "pdf")) stop("--format must be 'png' or 'pdf'")
 
 ###########################################################################
 ##                                                                       ##
@@ -58,6 +61,6 @@ p <- ggplot(long, aes(x=TAG, y=VALUE, group=1)) +
     theme_bw() +
     theme(axis.text.x=element_text(angle=45, hjust=1), legend.position="top")
 
-ggsave(paste0(opt$output, ".png"), p, width=max(5, 0.45 * nrow(calib) + 2), height=6, dpi=200, bg="white")
+ggsave(paste0(opt$output, ".", opt$format), p, width=max(5, 0.45 * nrow(calib) + 2), height=6, dpi=200, bg="white")
 cat(sprintf("%d PC sets plotted; suggested set is %s\n", nrow(calib), as.character(calib[SUGGESTED == "yes", TAG])))
 cat("Program completed successfully!\n")

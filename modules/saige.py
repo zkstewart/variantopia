@@ -743,8 +743,9 @@ def saige_calibrate(args):
     print(f"# Wrote {tableFile}")
 
     run_rscript("plot_calibration.R", ["-i", tableFile, "-o", outputPrefix + ".pc_calibration",
-                                       "--title", args.title],
-                args.rscript, logFile=outputPrefix + ".pc_calibration.plot.log")
+                                       "--title", args.title, "--format", "png"],
+                args.rscript, logFile=outputPrefix + ".pc_calibration.plot.log",
+                commandFile=outputPrefix + ".pc_calibration.plot.sh")
     print(f"# Wrote {plotFile}")
 
 def saige_gwas(args):
@@ -1141,7 +1142,7 @@ def saige_summarise(args):
     plotParams = { "version": __version__, "results": resultsRecord, "meff": meff,
                    **{ key: options[key] for key in SAIGESummary.STEP_OPTIONS["plot"] } }
     plotOutputs = [ outputPrefix + suffix for suffix in [".manhattan.png", ".qq.png", ".top_hits.tsv",
-                                                          ".chrom_lambda.tsv", ".plot.log"] ]
+                                                          ".chrom_lambda.tsv", ".plot.log", ".plot.sh"] ]
     regionsFile = outputPrefix + ".regions.tsv"
     plotRan = not summary.is_current("plot", plotParams, plotOutputs)
     if plotRan:
@@ -1150,8 +1151,9 @@ def saige_summarise(args):
         run_rscript("plot_manhattan.R", ["-i", inputs["results"], "-o", outputPrefix, "--sig", "bonferroni",
                                          "--meff", str(meff), "--suggestive", suggestive, "--annotate", suggestive,
                                          "--region_p", suggestive, "--region_gap", f"{options['regionGap']:g}",
-                                         "--top_n", str(options["topN"]), "--title", options["title"]],
-                    args.rscript, logFile=outputPrefix + ".plot.log")
+                                         "--top_n", str(options["topN"]), "--title", options["title"],
+                                         "--format", "png"],
+                    args.rscript, logFile=outputPrefix + ".plot.log", commandFile=outputPrefix + ".plot.sh")
         with open(outputPrefix + ".plot.log", "r") as fileIn:
             for line in fileIn:
                 if not line.startswith("Program completed"):

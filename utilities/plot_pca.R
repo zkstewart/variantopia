@@ -7,12 +7,13 @@
 #   Rscript plot_pca.R -e x.pca.eigenvec -v x.pca.eigenval -f x.psam \
 #       -l x.pca.eigenvec.var -o x.pca
 #
-# Requires: R packages optparse, data.table, ggplot2
+# Requires: R packages optparse, data.table, ggplot2 (and png, for --format pdf)
 #
 # Outputs:
 #   <prefix>.scree.png      eigenvalues / approx. % variance per PC
 #   <prefix>.pcs.png        PC pairs (1v2, 3v4, ...) coloured by family, shaped by phenotype
 #   <prefix>.loadings.png   |SNP loading| along the genome per PC (if -l given)
+#   (plots are .pdf rather than .png with --format pdf)
 #   <prefix>.summary.tsv    per PC: eigenvalue, % variance, R^2 explained by family,
 #                           phenotype association P, and loading concentration
 
@@ -32,11 +33,61 @@ optionList <- list(
     make_option(c("-o", "--output"), type="character", help="Output file prefix"),
     make_option("--plot_pcs", type="integer", default=8,
                 help="Number of PCs to show in the pairs and loadings plots [default %default]"),
+    make_option("--format", type="character", default="png",
+                help="Plot file format; 'png' or 'pdf' (vector graphics, e.g., for editing) [default %default]"),
+    make_option("--raster_dpi", type="integer", default=300,
+                help=paste("With --format pdf, the resolution at which dense point layers are embedded",
+                           "as images, keeping the PDF small enough to edit; 0 keeps them as vector",
+                           "points [default %default]")),
     make_option("--title", type="character", default="", help="Plot title")
 )
 opt <- parse_args(OptionParser(option_list=optionList))
 for (req in c("eigenvec", "eigenval", "fam", "output")) {
     if (is.null(opt[[req]])) stop(sprintf("--%s is required", req))
+}
+if (!opt$format %in% c("png", "pdf")) stop("--format must be 'png' or 'pdf'")
+rasterise <- opt$format == "pdf" && opt$raster_dpi > 0
+if (rasterise && !requireNamespace("png", quietly=TRUE)) {
+    stop("--format pdf needs the R package 'png' to embed dense points as images; install it, or use --raster_dpi 0")
+}
+
+###########################################################################
+##                                                                       ##
+##                          RASTERISED POINTS                            ##
+##                                                                       ##
+###########################################################################
+
+# Dense point layers make very large PDFs (millions of vector points) that are
+# slow to open and edit. rasterised_points() is a drop-in for geom_point() that
+# draws its points as one embedded image at --raster_dpi, sized to its panel
+# when the plot is drawn, while axes, labels, lines and text remain vectors.
+# Requires the 'png' R package.
+rasterised_points <- function(..., dpi=300) {
+    layer <- geom_point(...)
+    parent <- layer$geom
+    layer$geom <- ggproto(NULL, parent,
+        draw_panel=function(self, ...) {
+            grob <- ggproto_parent(parent, self)$draw_panel(...)
+            grid::gTree(children=grid::gList(grob), dpi=dpi, cl="rasterised_points")
+        })
+    layer
+}
+# grid draws a gTree via its makeContent() method, found here by S3 dispatch
+makeContent.rasterised_points <- function(x) {
+    width <- grid::convertWidth(grid::unit(1, "npc"), "in", valueOnly=TRUE)
+    height <- grid::convertHeight(grid::unit(1, "npc"), "in", valueOnly=TRUE)
+    imageFile <- tempfile(fileext=".png")
+    currentDevice <- grDevices::dev.cur()
+    grDevices::png(imageFile, width=width, height=height, units="in", res=x$dpi, bg="transparent", type="cairo")
+    # Points are in native units, which span 0-1 in a panel as in a new viewport
+    grid::grid.newpage()
+    grid::pushViewport(grid::viewport())
+    grid::grid.draw(x$children)
+    grDevices::dev.off()
+    grDevices::dev.set(currentDevice)
+    image <- png::readPNG(imageFile)
+    unlink(imageFile)
+    grid::setChildren(x, grid::gList(grid::rasterGrob(image, width=grid::unit(width, "in"), height=grid::unit(height, "in"))))
 }
 
 ###########################################################################
@@ -139,14 +190,14 @@ if (!is.na(opt$loadings)) {
     longLoad[, ABSLOAD := abs(LOADING)]
     longLoad[, PC := factor(PC, levels=plotPCs)]
     lp <- ggplot(longLoad, aes(x=BPCUM, y=ABSLOAD, colour=CHROM)) +
-        geom_point(size=0.2, alpha=0.5) +
+        (if (rasterise) rasterised_points(size=0.2, alpha=0.5, dpi=opt$raster_dpi) else geom_point(size=0.2, alpha=0.5)) +
         facet_wrap(~PC, ncol=1, scales="free_y", strip.position="right") +
         scale_colour_manual(values=rep(c("#1F4E79", "#7FA7D1"), length.out=length(chromOrder)), guide="none") +
         scale_x_continuous(breaks=axisDf$CENTER, labels=axisDf$CHROM, expand=c(0.01, 0)) +
         labs(x="Chromosome", y="|SNP loading|", title=opt$title) +
         theme_bw() +
         theme(panel.grid=element_blank())
-    ggsave(paste0(opt$output, ".loadings.png"), lp, width=12, height=1.4 * length(plotPCs) + 1, dpi=200)
+    ggsave(paste0(opt$output, ".loadings.", opt$format), lp, width=12, height=1.4 * length(plotPCs) + 1, dpi=200)
 }
 
 fwrite(summaryDf, paste0(opt$output, ".summary.tsv"), sep="\t")
@@ -166,7 +217,7 @@ sp <- ggplot(summaryDf, aes(x=PC, y=PCT_VAR)) +
     labs(x="Principal component", y="Approx. % of genetic variance (eigenvalue / N)", title=opt$title) +
     theme_bw() +
     theme(panel.grid.minor=element_blank())
-ggsave(paste0(opt$output, ".scree.png"), sp, width=7, height=4, dpi=200)
+ggsave(paste0(opt$output, ".scree.", opt$format), sp, width=7, height=4, dpi=200)
 
 # PC pairs coloured by family and shaped by phenotype
 numPairs <- min(opt$plot_pcs, numPCs) %/% 2
@@ -184,6 +235,6 @@ pp <- ggplot(pairsDf, aes(x=X, y=Y, colour=FAMID, shape=PHENOTYPE)) +
     labs(x=NULL, y=NULL, colour="Family ID", shape="Phenotype", title=opt$title) +
     theme_bw() +
     theme(panel.grid.minor=element_blank())
-ggsave(paste0(opt$output, ".pcs.png"), pp, width=10, height=4 * ceiling(numPairs / 2) + 0.5, dpi=200)
+ggsave(paste0(opt$output, ".pcs.", opt$format), pp, width=10, height=4 * ceiling(numPairs / 2) + 0.5, dpi=200)
 
 cat("Program completed successfully!\n")
