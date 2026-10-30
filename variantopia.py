@@ -421,7 +421,7 @@ def main():
     panplotheteroparser = subPanPlotParsers.add_parser("heterozygosity",
                                                        parents=[p],
                                                        add_help=False,
-                                                       help="Inferences of progeny haplotype inheritance")
+                                                       help="Progeny homozygosity and heterozygosity along chromosomes")
     panplotheteroparser.add_argument("-i", dest="vcfFile",
                                      required=True,
                                      help="Location of pangenome VCF file")
