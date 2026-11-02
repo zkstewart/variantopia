@@ -1083,13 +1083,23 @@ def inspect_leads(summary, inputs, leads, options, args, leadsFile, familiesFile
                                      summary.manifest["grm"]["format"]), args)
     with plink.work_dir(summary.outputPrefix) as workDir:
         leadIDs = { lead["id"] for lead in leads }
-        nullVariants = [ v for v in grmPlink.thin_variants(min(SAIGESummary.NULL_VARIANTS, summary.manifest["grm"]["variants"]),
-                                                           workDir, seed=SAIGESummary.NULL_SEED)
-                         if v[1] not in leadIDs ]
         extractFile = os.path.join(workDir, "inspect.txt")
-        with open(extractFile, "w") as fileOut:
-            fileOut.write("\n".join([ lead["id"] for lead in leads ] + [ v[1] for v in nullVariants ]) + "\n")
-        iids, variantIDs, countedAlleles, dosages = plink.export_dosages(extractFile, workDir)
+        def export_with_null(nullPlink, count):
+            nullVariants = [ v for v in nullPlink.thin_variants(count, workDir, seed=SAIGESummary.NULL_SEED)
+                             if v[1] not in leadIDs ]
+            with open(extractFile, "w") as fileOut:
+                fileOut.write("\n".join([ lead["id"] for lead in leads ] + [ v[1] for v in nullVariants ]) + "\n")
+            return nullVariants, plink.export_dosages(extractFile, workDir)
+
+        # Null variants come from the LD-pruned GRM fileset, unless most of them were not tested
+        # (e.g., CNV windows tested with a SNP GRM); they are then drawn from the tested fileset
+        nullSource = "grm"
+        nullVariants, (iids, variantIDs, countedAlleles, dosages) = export_with_null(
+            grmPlink, min(SAIGESummary.NULL_VARIANTS, summary.manifest["grm"]["variants"]))
+        exported = set(variantIDs)
+        if sum(v[1] in exported for v in nullVariants) < len(nullVariants) / 2:
+            nullSource = "test"
+            nullVariants, (iids, variantIDs, countedAlleles, dosages) = export_with_null(plink, SAIGESummary.NULL_VARIANTS)
         sampleOrder, sampleDict = parse_sample_info(plink.write_psam(os.path.join(workDir, "samples")))
 
     # Orient lead dosages to SAIGE's effect allele (Allele2)
@@ -1119,7 +1129,7 @@ def inspect_leads(summary, inputs, leads, options, args, leadsFile, familiesFile
     inspector.set_null(nullR2, alpha=SAIGESummary.LINK_ALPHA,
                        linkR2=None if options["linkR2"] == "auto" else options["linkR2"])
     counts = inspector.write(leadsFile, familiesFile)
-    return { "nullVariants": len(nullColumns), "nullPairs": len(nullR2),
+    return { "nullVariants": len(nullColumns), "nullSource": nullSource, "nullPairs": len(nullR2),
              "nullR2Quantiles": { str(q): round(float(np.quantile(nullR2, q)), 4) for q in [0.5, 0.99, 0.9999] },
              "hasParents": inspector.hasParents, **counts }
 
@@ -1206,7 +1216,8 @@ def saige_summarise(args):
         else:
             results = inspect_leads(summary, inputs, leads, options, args, leadsFile, familiesFile)
             quantiles = results["nullR2Quantiles"]
-            print(f"# Null r^2 between {results['nullVariants']} LD-pruned variants on different chromosomes: " +
+            nullDescription = "LD-pruned" if results["nullSource"] == "grm" else "tested (GRM variants not tested)"
+            print(f"# Null r^2 between {results['nullVariants']} {nullDescription} variants on different chromosomes: " +
                   f"median {quantiles['0.5']}, 99% {quantiles['0.99']}, 99.99% {quantiles['0.9999']}")
             threshold = f"r^2 >= {options['linkR2']:g}" if options["linkR2"] != "auto" else \
                         f"adjusted empirical P < {SAIGESummary.LINK_ALPHA:g}"
