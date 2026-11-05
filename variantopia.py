@@ -306,13 +306,19 @@ def main():
                                 help="Specify the two parent samples")
     panpaintparser.add_argument("-r", dest="reference",
                                 required=True,
-                                help="""Specify the parent sample whose other haplotype is the
-                                pangenome reference; its haplotype 1 is the reference, except on
-                                segments whose labels are swapped by phase switch correction""")
+                                help="""Specify the parent sample that provided the pangenome reference; see
+                                --refHap for which of its haplotypes this was""")
     panpaintparser.add_argument("-o", dest="outputFileName",
                                 required=True,
                                 help="""Location to write output TSV file of haplotype blocks; phase switch
                                 corrections are written alongside it to <prefix>.phase_segments.tsv""")
+    panpaintparser.add_argument("--refHap", dest="referenceHaplotype",
+                                required=False,
+                                type=int,
+                                help="""Optionally specify which haplotype of the -r parent was the pangenome
+                                reference; its other haplotypes are assumed to occur in the VCF in sequential
+                                order; default == 1""",
+                                default=1)
     panpaintparser.add_argument("--rate", dest="recombinationRate",
                                 required=False,
                                 type=float,
@@ -456,6 +462,13 @@ def main():
     panplotinheritparser.add_argument("-o", dest="outputFileName",
                                       required=True,
                                       help="Location to write output file")
+    panplotinheritparser.add_argument("--refHap", dest="referenceHaplotype",
+                                      required=False,
+                                      type=int,
+                                      help="""Optionally specify which haplotype of the -r parent was the pangenome
+                                      reference; its other haplotypes are assumed to occur in the VCF in sequential
+                                      order; default == 1""",
+                                      default=1)
 
     # PLINK subparser
     plparser = subparsers.add_parser("plink",

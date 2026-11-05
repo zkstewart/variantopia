@@ -164,6 +164,8 @@ def validate_pan_paint(args):
         raise ValueError(f"Reference (-r {args.reference}) must be one of the parents (-p {args.parents})")
     
     # Validate numeric arguments
+    if args.referenceHaplotype < 1:
+        raise ValueError("--refHap must be a positive integer greater than 0")
     if args.recombinationRate <= 0:
         raise ValueError("--rate must be greater than 0")
     if not 0 < args.errorRate < 0.5:
@@ -201,7 +203,8 @@ def validate_pan_plot_inherit(args):
     '''
     Validation for arguments used in "pangenome plot inheritance" mode.
     '''
-    pass # no specific validation needed for 'pangenome plot inheritance' mode
+    if args.referenceHaplotype < 1:
+        raise ValueError("--refHap must be a positive integer greater than 0")
 
 def validate_pan_plot_paint(args):
     '''

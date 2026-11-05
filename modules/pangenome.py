@@ -78,20 +78,25 @@ def possible_genotypes(gt1, gt2):
     
     return set(possibleGTs)
 
-def as_pangenome_variant(variant, referenceIndex):
+def as_pangenome_variant(variant, referenceIndex, referenceHaplotype=1):
     '''
     Receives a standard cyvcf2.cyvcf2.Variant object and modifies its genotypes
-    field to correctly indicate the reference sample's genotype.
-    
-    Note that this is only capable of handling diploids.
+    field to correctly indicate the reference sample's genotype. The reference sample's
+    remaining haplotypes are assumed to occur in the VCF in their sequential order e.g.,
+    a GT of 0|1 for a triploid with its haplotype 2 as the reference becomes 0|<ref>|1.
     
     Parameters:
         variant -- a cyvcf2.cyvcf2.Variant object
         referenceIndex -- the index of the reference sample as found within variant.genotypes
+        referenceHaplotype -- an integer (1-based) indicating which of the reference sample's
+                              haplotypes was the pangenome reference
     '''
     refGT = variant.genotypes[referenceIndex]
     if set(refGT[:-1]) != {-1}: # if this site was called
-        variant.genotypes[referenceIndex] = [0, *refGT] # 0 == REF code
+        if referenceHaplotype > len(refGT): # refGT holds the other haplotypes and the phased boolean
+            raise ValueError(f"Reference haplotype {referenceHaplotype} exceeds the ploidy of the reference sample " +
+                             f"({len(refGT)}) at {variant.CHROM}:{variant.POS}")
+        variant.genotypes[referenceIndex] = [*refGT[:referenceHaplotype-1], 0, *refGT[referenceHaplotype-1:]] # 0 == REF code
 
 def assign_sampleGT_to_parent_haplotypes(sampleGT, p1GT, p2GT, PARENT_FULLY_ASSIGNED):
     '''
@@ -269,7 +274,7 @@ def pan_plot_inherit(args):
     assignments = {}
     samplesToPlot = set()
     for variant in vcf:
-        as_pangenome_variant(variant, referenceIndex)
+        as_pangenome_variant(variant, referenceIndex, args.referenceHaplotype)
         sampleIntegers = VCFTopia.sample_integers(vcf.samples, variant)
         
         # Obtain the parent genotypes
@@ -366,7 +371,7 @@ def pan_plot_inherit(args):
 PAINT_P1_HAP = np.array([0, 0, 1, 1])
 PAINT_P2_HAP = np.array([0, 1, 0, 1])
 
-def paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, offspringIndices, minGQ):
+def paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, referenceHaplotype, offspringIndices, minGQ):
     '''
     Parses the variants of a contig into arrays suitable for haplotype painting. Only sites
     where both parents are fully genotyped and at least one parent is heterozygous are retained.
@@ -376,6 +381,8 @@ def paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, offspringI
         contig -- a string indicating the contig to parse
         p1Index / p2Index -- integer indices of the parent samples
         referenceIndex -- integer index of the reference (haploid column) parent sample
+        referenceHaplotype -- integer (1-based) indicating which of the reference parent's
+                              haplotypes was the pangenome reference
         offspringIndices -- a list of integer indices of the offspring samples
         minGQ -- an integer indicating the minimum GQ for an offspring genotype to be used
     Returns:
@@ -388,12 +395,18 @@ def paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, offspringI
     '''
     positions, parentGTs, offspringGTs = [], [], []
     for variant in vcf.query(contig):
-        as_pangenome_variant(variant, referenceIndex)
+        as_pangenome_variant(variant, referenceIndex, referenceHaplotype)
         genotypes = variant.genotypes
         
-        # Skip sites where parents are not fully genotyped
+        # Painting models the meiosis of two diploid parents
         p1GT = genotypes[p1Index][:-1] # drop the phased boolean
         p2GT = genotypes[p2Index][:-1]
+        for parentIndex, parentGT in zip([p1Index, p2Index], [p1GT, p2GT]):
+            if len(parentGT) != 2 and set(parentGT) != {-1}:
+                raise ValueError(f"Parent '{vcf.samples[parentIndex]}' has {len(parentGT)} haplotypes at {variant.CHROM}:{variant.POS} " +
+                                 f"after adding any reference haplotype, but painting requires diploid parents; check that -r is correct")
+        
+        # Skip sites where parents are not fully genotyped
         if len(p1GT) != 2 or len(p2GT) != 2 or -1 in p1GT or -1 in p2GT:
             continue
         
@@ -668,57 +681,61 @@ def pan_paint(args):
         print("WARNING: VCF does not contain a GQ FORMAT field; --minGQ filtering will not be applied")
         args.minGQ = 0
     minShared = max(3, math.ceil(args.phaseShared * len(offspringIDs)))
+    blockRows = []
     phaseSegments = []
     
+    for contig in vcf.contigs:
+        positions, parentGTs, offspringGTs = paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex, args.referenceHaplotype,
+                                                                offspringIndices, args.minGQ)
+        if len(positions) == 0:
+            continue
+        
+        # Drop sites where too many offspring are inconsistent with any inheritance state
+        matches = paint_state_matches(parentGTs, offspringGTs)
+        called = offspringGTs[:, :, 0] != -1
+        numCalled = called.sum(axis=1)
+        numErrors = (called & ~matches.any(axis=2)).sum(axis=1)
+        keep = (numCalled > 0) & (numErrors <= args.maxSiteError * numCalled)
+        positions, parentGTs, matches, called = positions[keep], parentGTs[keep], matches[keep], called[keep]
+        print(f"# {contig}: retained {keep.sum()} of {len(keep)} informative sites")
+        if len(positions) == 0:
+            continue
+        
+        path = paint_viterbi(positions, matches, called, args.recombinationRate, args.errorRate)
+        
+        # Derive haplotype blocks for each offspring's inherited haplotype from each parent
+        for parentID, stateHaps in zip(args.parents, [PAINT_P1_HAP, PAINT_P2_HAP]):
+            # Haplotype is evidenced where the genotype fits one parental haplotype but not the other
+            hapMatches = [ matches[:, :, stateHaps == hap].any(axis=2) for hap in [0, 1] ]
+            evidence = np.where(hapMatches[0] & ~hapMatches[1], 0,
+                                np.where(hapMatches[1] & ~hapMatches[0], 1, -1))
+            pathHaps = stateHaps[path]
+            offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
+                                                     args.minBlockSize, args.minMarkers)
+            
+            # Correct parental phase switches by swapping haplotype labels between switches
+            if args.phaseShared > 0:
+                switches = paint_find_phase_switches(offspringBlocks, minShared, args.minBlockSize)
+                if len(switches) > 0:
+                    for switchPosition, numShared in switches:
+                        print(f"# {contig}: corrected {parentID} phase switch at ~{switchPosition} " +
+                              f"(shared by {numShared} of {len(offspringIDs)} offspring)")
+                    flip, segments = paint_orient_segments(positions, switches)
+                    phaseSegments += [ [contig, parentID, *segment] for segment in segments ]
+                    flip = flip[:, None]
+                    evidence = np.where(evidence == -1, -1, evidence ^ flip)
+                    pathHaps = pathHaps ^ flip
+                    offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
+                                                             args.minBlockSize, args.minMarkers)
+            
+            for offspringID, blocks in zip(offspringIDs, offspringBlocks):
+                for start, end, hap, supporting, conflicting in blocks:
+                    blockRows.append(f"{offspringID}\t{contig}\t{start}\t{end}\t{parentID}\t{hap+1}\t{supporting}\t{conflicting}\n")
+    
+    # Write outputs only once every contig has succeeded, so errors do not leave partial files behind
     with open(args.outputFileName, "w") as fileOut:
         fileOut.write("sample\tchrom\tstart\tend\tparent\thaplotype\tsupporting\tconflicting\n")
-        for contig in vcf.contigs:
-            positions, parentGTs, offspringGTs = paint_parse_contig(vcf, contig, p1Index, p2Index, referenceIndex,
-                                                                    offspringIndices, args.minGQ)
-            if len(positions) == 0:
-                continue
-            
-            # Drop sites where too many offspring are inconsistent with any inheritance state
-            matches = paint_state_matches(parentGTs, offspringGTs)
-            called = offspringGTs[:, :, 0] != -1
-            numCalled = called.sum(axis=1)
-            numErrors = (called & ~matches.any(axis=2)).sum(axis=1)
-            keep = (numCalled > 0) & (numErrors <= args.maxSiteError * numCalled)
-            positions, parentGTs, matches, called = positions[keep], parentGTs[keep], matches[keep], called[keep]
-            print(f"# {contig}: retained {keep.sum()} of {len(keep)} informative sites")
-            if len(positions) == 0:
-                continue
-            
-            path = paint_viterbi(positions, matches, called, args.recombinationRate, args.errorRate)
-            
-            # Derive haplotype blocks for each offspring's inherited haplotype from each parent
-            for parentID, stateHaps in zip(args.parents, [PAINT_P1_HAP, PAINT_P2_HAP]):
-                # Haplotype is evidenced where the genotype fits one parental haplotype but not the other
-                hapMatches = [ matches[:, :, stateHaps == hap].any(axis=2) for hap in [0, 1] ]
-                evidence = np.where(hapMatches[0] & ~hapMatches[1], 0,
-                                    np.where(hapMatches[1] & ~hapMatches[0], 1, -1))
-                pathHaps = stateHaps[path]
-                offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
-                                                         args.minBlockSize, args.minMarkers)
-                
-                # Correct parental phase switches by swapping haplotype labels between switches
-                if args.phaseShared > 0:
-                    switches = paint_find_phase_switches(offspringBlocks, minShared, args.minBlockSize)
-                    if len(switches) > 0:
-                        for switchPosition, numShared in switches:
-                            print(f"# {contig}: corrected {parentID} phase switch at ~{switchPosition} " +
-                                  f"(shared by {numShared} of {len(offspringIDs)} offspring)")
-                        flip, segments = paint_orient_segments(positions, switches)
-                        phaseSegments += [ [contig, parentID, *segment] for segment in segments ]
-                        flip = flip[:, None]
-                        evidence = np.where(evidence == -1, -1, evidence ^ flip)
-                        pathHaps = pathHaps ^ flip
-                        offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
-                                                                 args.minBlockSize, args.minMarkers)
-                
-                for offspringID, blocks in zip(offspringIDs, offspringBlocks):
-                    for start, end, hap, supporting, conflicting in blocks:
-                        fileOut.write(f"{offspringID}\t{contig}\t{start}\t{end}\t{parentID}\t{hap+1}\t{supporting}\t{conflicting}\n")
+        fileOut.writelines(blockRows)
     
     # Record the parts of each chromosome whose labels were changed by phase switch correction
     if args.phaseShared > 0:
