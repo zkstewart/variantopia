@@ -178,6 +178,12 @@ def validate_pan_paint(args):
         raise ValueError("--minMarkers must be >= 0")
     if not 0 <= args.phaseShared <= 1:
         raise ValueError("--phaseShared must be between 0 and 1")
+    
+    # Validate phase segments output file name
+    prefix = args.outputFileName[:-len(".tsv")] if args.outputFileName.endswith(".tsv") else args.outputFileName
+    args.phaseSegmentsFileName = f"{prefix}.phase_segments.tsv"
+    if args.phaseShared > 0 and os.path.exists(args.phaseSegmentsFileName):
+        raise FileExistsError(f"Phase segments output file ({args.phaseSegmentsFileName}) already exists!")
 
 def validate_pan_plot(args):
     '''

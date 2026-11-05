@@ -615,6 +615,41 @@ def paint_find_phase_switches(offspringBlocks, minShared, window):
     
     return switches
 
+def paint_orient_segments(positions, switches):
+    '''
+    Derives the haplotype label swaps that correct parental phase switches. Correction fixes the
+    relationship between the segments separated by each switch, leaving two possible labellings
+    of a chromosome that differ only by which haplotype is called 1 or 2. This function chooses the
+    labelling which agrees with the parent's assembly haplotypes over the most base pairs; if tied,
+    the first segment keeps its labels.
+    
+    Parameters:
+        positions -- a sorted numpy array of shape (nSites,) with variant positions
+        switches -- a non-empty list as returned by paint_find_phase_switches()
+    Returns:
+        flip -- a numpy array of shape (nSites,) with 1 at sites whose labels are swapped, else 0
+        segments -- a list of lists with format like [[start, end, isSwapped, numShared], ...]
+                    where numShared is the number of offspring sharing the switch at the
+                    segment's start, or None for the first segment
+    '''
+    switchPositions = [ switchPosition for switchPosition, _ in switches ]
+    numSharedList = [None] + [ numShared for _, numShared in switches ]
+    
+    # A site belongs to the segment after each switch position that is less than its position
+    segmentIndices = np.searchsorted(switchPositions, positions)
+    
+    # Measure the base pairs that agree with the assembly if the first segment keeps its labels
+    lengths = np.diff([positions[0], *switchPositions, positions[-1]])
+    swapOffset = 1 if lengths[1::2].sum() > lengths[0::2].sum() else 0
+    
+    segments = []
+    starts = [positions[0], *[ switchPosition + 1 for switchPosition in switchPositions ]]
+    ends = [*switchPositions, positions[-1]]
+    for segmentIndex, (start, end, numShared) in enumerate(zip(starts, ends, numSharedList)):
+        segments.append([int(start), int(end), (segmentIndex + swapOffset) % 2 == 1, numShared])
+    
+    return (segmentIndices + swapOffset) % 2, segments
+
 def pan_paint(args):
     vcf = VCFTopia(args.vcfFile)
     
@@ -633,6 +668,7 @@ def pan_paint(args):
         print("WARNING: VCF does not contain a GQ FORMAT field; --minGQ filtering will not be applied")
         args.minGQ = 0
     minShared = max(3, math.ceil(args.phaseShared * len(offspringIDs)))
+    phaseSegments = []
     
     with open(args.outputFileName, "w") as fileOut:
         fileOut.write("sample\tchrom\tstart\tend\tparent\thaplotype\tsupporting\tconflicting\n")
@@ -665,14 +701,16 @@ def pan_paint(args):
                 offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
                                                          args.minBlockSize, args.minMarkers)
                 
-                # Correct parental phase switches by swapping haplotype labels after each switch
+                # Correct parental phase switches by swapping haplotype labels between switches
                 if args.phaseShared > 0:
                     switches = paint_find_phase_switches(offspringBlocks, minShared, args.minBlockSize)
                     if len(switches) > 0:
                         for switchPosition, numShared in switches:
                             print(f"# {contig}: corrected {parentID} phase switch at ~{switchPosition} " +
                                   f"(shared by {numShared} of {len(offspringIDs)} offspring)")
-                        flip = (np.searchsorted([ switchPosition for switchPosition, _ in switches ], positions) % 2)[:, None]
+                        flip, segments = paint_orient_segments(positions, switches)
+                        phaseSegments += [ [contig, parentID, *segment] for segment in segments ]
+                        flip = flip[:, None]
                         evidence = np.where(evidence == -1, -1, evidence ^ flip)
                         pathHaps = pathHaps ^ flip
                         offspringBlocks = paint_offspring_blocks(positions, evidence, pathHaps,
@@ -681,6 +719,15 @@ def pan_paint(args):
                 for offspringID, blocks in zip(offspringIDs, offspringBlocks):
                     for start, end, hap, supporting, conflicting in blocks:
                         fileOut.write(f"{offspringID}\t{contig}\t{start}\t{end}\t{parentID}\t{hap+1}\t{supporting}\t{conflicting}\n")
+    
+    # Record the parts of each chromosome whose labels were changed by phase switch correction
+    if args.phaseShared > 0:
+        with open(args.phaseSegmentsFileName, "w") as fileOut:
+            fileOut.write("chrom\tparent\tstart\tend\tlabels\tshared\n")
+            for contig, parentID, start, end, isSwapped, numShared in phaseSegments:
+                labels = "swapped" if isSwapped else "assembly"
+                shared = "." if numShared is None else numShared
+                fileOut.write(f"{contig}\t{parentID}\t{start}\t{end}\t{labels}\t{shared}\n")
 
 if __name__ == "__main__":
     pass
